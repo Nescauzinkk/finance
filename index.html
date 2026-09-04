@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Razão — Controle Financeiro Pessoal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+<div id="app-loader"><div class="spinner"></div><div class="loader-text">Carregando seus dados…</div></div>
+
+<div id="auth-screen" class="auth-screen" style="display:none">
+  <div class="auth-card">
+    <div class="brand-row" style="padding:0 0 20px 0"><svg class="ic" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M23 6l-9.5 9.5-5-5L1 18"/><path d="M17 6h6v6"/></svg><span class="brand">Razão<span>.</span></span></div>
+    <h2 id="auth-title" style="margin-bottom:6px">Entrar</h2>
+    <p class="view-sub" style="margin-bottom:20px">Acesse seu controle financeiro pessoal.</p>
+    <form id="auth-form">
+      <div class="field"><label>E-mail</label><input type="email" id="auth-email" required autocomplete="email"></div>
+      <div class="field"><label>Senha</label><input type="password" id="auth-password" required autocomplete="current-password" minlength="6"></div>
+      <div id="auth-error" class="auth-error" style="display:none"></div>
+      <button type="submit" class="btn primary" style="width:100%;justify-content:center" id="auth-submit">Entrar</button>
+    </form>
+    <div class="auth-switch">
+      <span id="auth-switch-text">Ainda não tem conta?</span>
+      <button type="button" id="auth-switch-btn">Criar conta</button>
+    </div>
+  </div>
+</div>
+
+<div class="app" id="app-root" style="display:none">
+  <header class="topbar">
+    <div class="topbar-brand"><svg class="ic" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M23 6l-9.5 9.5-5-5L1 18"/><path d="M17 6h6v6"/></svg><span class="brand-text">Razão<span>.</span></span></div>
+    <nav class="topbar-nav">
+      <button class="nav-item" data-view="dashboard" data-icon="dashboard"><span class="label">Dashboard</span></button>
+      <button class="nav-item" data-view="lancamentos" data-icon="list"><span class="label">Lançamentos</span></button>
+      <button class="nav-item" data-view="planejamento" data-icon="calendar"><span class="label">Planejamento</span></button>
+      <button class="nav-item" data-view="cartao" data-icon="creditcard"><span class="label">Cartão</span></button>
+      <button class="nav-item" data-view="parcelamentos" data-icon="layers"><span class="label">Parcelamentos</span></button>
+      <button class="nav-item" data-view="dividas" data-icon="trendingDown"><span class="label">Dívidas</span></button>
+      <button class="nav-item" data-view="receitas" data-icon="trendingUp"><span class="label">Receitas</span></button>
+      <button class="nav-item" data-view="recorrentes" data-icon="repeat"><span class="label">Recorrentes</span></button>
+      <button class="nav-item" data-view="metas" data-icon="target"><span class="label">Metas</span></button>
+      <button class="nav-item" data-view="relatorios" data-icon="barchart"><span class="label">Relatórios</span></button>
+      <button class="nav-item" data-view="configuracoes" data-icon="sliders"><span class="label">Config.</span></button>
+    </nav>
+    <div class="topbar-right">
+      <span id="sidebar-user" class="topbar-user"></span>
+      <button class="nav-item" id="btn-logout" data-icon="logout"><span class="label">Sair</span></button>
+    </div>
+  </header>
+  <main class="content">
+    <div id="view-dashboard" class="view"></div>
+    <div id="view-lancamentos" class="view"></div>
+    <div id="view-planejamento" class="view"></div>
+    <div id="view-cartao" class="view"></div>
+    <div id="view-parcelamentos" class="view"></div>
+    <div id="view-dividas" class="view"></div>
+    <div id="view-receitas" class="view"></div>
+    <div id="view-recorrentes" class="view"></div>
+    <div id="view-metas" class="view"></div>
+    <div id="view-relatorios" class="view"></div>
+    <div id="view-configuracoes" class="view"></div>
+  </main>
+  <footer class="site-footer">Seus dados ficam salvos com segurança no Supabase · Feito por <strong>Aldo</strong></footer>
+</div>
+<div id="modal-root"></div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
