@@ -15,7 +15,7 @@
 
 <div id="auth-screen" class="auth-screen" style="display:none">
   <div class="auth-card">
-    <div class="brand-row" style="padding:0 0 20px 0"><img src="/logo-mark-128.png" alt="Kivo" class="logo-mark"><span class="brand">Kivo</span></div>
+    <div class="brand-row" style="padding:0 0 24px 0"><img src="/logo-wordmark.png" alt="Kivo" class="logo-wordmark"></div>
     <h2 id="auth-title" style="margin-bottom:6px">Entrar</h2>
     <p class="view-sub" style="margin-bottom:20px">Acesse seu controle financeiro pessoal.</p>
     <form id="auth-form">
@@ -33,22 +33,26 @@
 
 <div class="app" id="app-root" style="display:none">
   <header class="topbar">
-    <div class="topbar-brand"><img src="/logo-mark-128.png" alt="Kivo" class="logo-mark small"><span class="brand-text">Kivo</span></div>
+    <div class="topbar-brand"><img src="/logo-wordmark.png" alt="Kivo" class="logo-wordmark topbar-logo"></div>
     <nav class="topbar-nav">
       <button class="nav-item" data-view="dashboard" data-icon="dashboard"><span class="label">Dashboard</span></button>
-      <button class="nav-item" data-view="lancamentos" data-icon="list"><span class="label">Lançamentos</span></button>
       <button class="nav-item" data-view="planejamento" data-icon="calendar"><span class="label">Planejamento</span></button>
+      <span class="nav-divider"></span>
+      <button class="nav-item" data-view="lancamentos" data-icon="list"><span class="label">Lançamentos</span></button>
+      <button class="nav-item" data-view="recorrentes" data-icon="repeat"><span class="label">Recorrentes</span></button>
+      <span class="nav-divider"></span>
       <button class="nav-item" data-view="cartao" data-icon="creditcard"><span class="label">Cartão</span></button>
       <button class="nav-item" data-view="parcelamentos" data-icon="layers"><span class="label">Parcelamentos</span></button>
       <button class="nav-item" data-view="dividas" data-icon="trendingDown"><span class="label">Dívidas</span></button>
+      <span class="nav-divider"></span>
       <button class="nav-item" data-view="receitas" data-icon="trendingUp"><span class="label">Receitas</span></button>
-      <button class="nav-item" data-view="recorrentes" data-icon="repeat"><span class="label">Recorrentes</span></button>
       <button class="nav-item" data-view="metas" data-icon="target"><span class="label">Metas</span></button>
+      <span class="nav-divider"></span>
       <button class="nav-item" data-view="relatorios" data-icon="barchart"><span class="label">Relatórios</span></button>
-      <button class="nav-item" data-view="configuracoes" data-icon="sliders"><span class="label">Config.</span></button>
     </nav>
     <div class="topbar-right">
       <span id="sidebar-user" class="topbar-user"></span>
+      <button class="nav-item" data-view="configuracoes" data-icon="sliders" title="Configurações"></button>
       <button class="nav-item" id="btn-logout" data-icon="logout"><span class="label">Sair</span></button>
     </div>
   </header>

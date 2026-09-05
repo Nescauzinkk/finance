@@ -165,7 +165,7 @@ function defaultCategories(){
 function defaultState(){
   return {
     version:1,
-    settings:{ nome:'', moeda:'BRL', primeiroDiaMes:1, salarioPadrao:0, metaEconomiaMensal:0 },
+    settings:{ nome:'', moeda:'BRL', primeiroDiaMes:1, salarioPadrao:0, metaEconomiaMensal:0, currentBalance:0, currentBalanceDate:null },
     categories: defaultCategories(),
     cards: [],
     incomes: [],
@@ -254,6 +254,7 @@ async function loadState(){
   if(!state.categories || !state.categories.length) state.categories = defaultCategories();
   ['cards','incomes','recurring','installments','debts','goals','transactions'].forEach(k=>{ if(!state[k]) state[k]=[]; });
   if(!state.settings) state.settings = defaultState().settings;
+  state.settings = {...defaultState().settings, ...state.settings};
   rebuildIndex();
 }
 function rebuildIndex(){
@@ -292,6 +293,7 @@ function ensureTxn(def){
 }
 function materializeRecurringAndIncome(){
   const cur = todayMonthKey();
+  const horizon = addMonthsToKey(cur,1); // materializa também o mês seguinte, pra alimentar a linha do tempo de vencimentos
   state.incomes.forEach(inc=>{
     if(inc.status!=='ativa') return;
     if(inc.frequency==='unica'){
@@ -299,7 +301,7 @@ function materializeRecurringAndIncome(){
       return;
     }
     let m = monthKeyOf(inc.startDate);
-    while(m<=cur && (!inc.endDate || m<=monthKeyOf(inc.endDate))){
+    while(m<=horizon && (!inc.endDate || m<=monthKeyOf(inc.endDate))){
       ensureTxn({type:'receita',source:'income',sourceId:inc.id,occMonth:m,month:addMonthsToKey(m,inc.monthOffset||0),category:inc.category||inc.name,description:inc.name,value:inc.value,date:m+'-'+pad(inc.day||1)});
       m = addMonthsToKey(m,1);
     }
@@ -307,7 +309,7 @@ function materializeRecurringAndIncome(){
   state.recurring.forEach(r=>{
     if(r.status!=='ativa') return;
     let m = monthKeyOf(r.startDate);
-    while(m<=cur){
+    while(m<=horizon){
       ensureTxn({type:'despesa',source:'recurring',sourceId:r.id,occMonth:m,month:addMonthsToKey(m,r.monthOffset||0),category:r.category,description:r.name,value:r.value,paymentMethod:r.paymentMethod,date:m+'-'+pad(r.day||1)});
       m = addMonthsToKey(m,1);
     }
@@ -331,11 +333,12 @@ function materializeAll(){ rebuildIndex(); materializeRecurringAndIncome(); mate
 
 function virtualEntriesForMonth(monthKey){
   const out=[];
+  const horizon = addMonthsToKey(todayMonthKey(),1);
   state.incomes.forEach(inc=>{
     if(inc.status!=='ativa'||inc.frequency!=='mensal') return;
     const offset = inc.monthOffset||0;
     const m = addMonthsToKey(monthKey,-offset);
-    if(m<=todayMonthKey()) return; // já foi materializado como lançamento real
+    if(m<=horizon) return; // já foi materializado como lançamento real
     if(m<monthKeyOf(inc.startDate)) return;
     if(inc.endDate && m>monthKeyOf(inc.endDate)) return;
     out.push({id:'v-'+inc.id+monthKey,type:'receita',category:inc.category||inc.name,description:inc.name,value:inc.value,month:monthKey,status:'pendente',source:'income',sourceId:inc.id,virtual:true});
@@ -344,7 +347,7 @@ function virtualEntriesForMonth(monthKey){
     if(r.status!=='ativa') return;
     const offset = r.monthOffset||0;
     const m = addMonthsToKey(monthKey,-offset);
-    if(m<=todayMonthKey()) return;
+    if(m<=horizon) return;
     if(m<monthKeyOf(r.startDate)) return;
     out.push({id:'v-'+r.id+monthKey,type:'despesa',category:r.category,description:r.name,value:r.value,month:monthKey,status:'pendente',source:'recurring',sourceId:r.id,virtual:true});
   });
@@ -352,7 +355,7 @@ function virtualEntriesForMonth(monthKey){
 }
 function getMonthTransactions(monthKey){
   let txns = state.transactions.filter(t=>t.month===monthKey);
-  if(monthKey > todayMonthKey()) txns = txns.concat(virtualEntriesForMonth(monthKey));
+  if(monthKey > addMonthsToKey(todayMonthKey(),1)) txns = txns.concat(virtualEntriesForMonth(monthKey));
   return txns;
 }
 
@@ -466,22 +469,32 @@ function computeAlerts(){
   return alerts;
 }
 function cardUsed(cardId){
-  const cur = todayMonthKey();
-  let used=0;
-  state.installments.forEach(inst=>{
-    if(inst.cardId!==cardId) return;
-    const lastMonth = addMonthsToKey(inst.startMonth,inst.count-1);
-    for(let i=0;i<inst.count;i++){
-      const m = addMonthsToKey(inst.startMonth,i);
-      if(m>=cur) used += Number(inst.installmentValue);
-    }
-    void lastMonth;
-  });
-  return used;
+  // soma tudo que ainda está pendente (não pago) vinculado a esse cartão — parcelamentos e lançamentos manuais no crédito
+  return state.transactions
+    .filter(t=>t.cardId===cardId && t.type==='despesa' && t.status==='pendente')
+    .reduce((a,t)=>a+Number(t.value),0);
 }
 function installmentsPaidCount(sourceType,id){
   return state.transactions.filter(t=>t.source===sourceType && t.sourceId===id && t.status==='pago').length;
 }
+function daysBetween(isoA,isoB){
+  const a = new Date(isoA+'T00:00:00'), b = new Date(isoB+'T00:00:00');
+  return Math.round((b-a)/86400000);
+}
+function upcomingItems(daysAhead){
+  const today = todayISO();
+  const limit = new Date(today+'T00:00:00');
+  limit.setDate(limit.getDate()+daysAhead);
+  const limitIso = `${limit.getFullYear()}-${pad(limit.getMonth()+1)}-${pad(limit.getDate())}`;
+  const overdueLimit = new Date(today+'T00:00:00');
+  overdueLimit.setDate(overdueLimit.getDate()-45);
+  const overdueIso = `${overdueLimit.getFullYear()}-${pad(overdueLimit.getMonth()+1)}-${pad(overdueLimit.getDate())}`;
+  return state.transactions
+    .filter(t=>t.status==='pendente' && t.date && t.date>=overdueIso && t.date<=limitIso)
+    .sort((a,b)=> a.date.localeCompare(b.date))
+    .map(t=>({...t, daysUntil: daysBetween(today, t.date)}));
+}
+
 
 /* ===================== MODAL SYSTEM ===================== */
 const modalRoot = ()=>document.getElementById('modal-root');
@@ -520,6 +533,34 @@ function choiceModal(title,message,choices){
   $('.modal-backdrop').onclick=(e)=>{ if(e.target.dataset.close) closeModal(); };
 }
 
+/* ===================== CURRENCY MASK ===================== */
+function formatCurrencyDigits(num){
+  const neg = Number(num)<0;
+  let cents = Math.round(Math.abs(Number(num)||0)*100);
+  let s = String(cents).padStart(3,'0');
+  let decimals = s.slice(-2);
+  let intPart = s.slice(0,-2).replace(/^0+(?=\d)/,'');
+  intPart = intPart.replace(/\B(?=(\d{3})+(?!\d))/g,'.');
+  return (neg?'-':'')+intPart+','+decimals;
+}
+function parseCurrencyValue(str){
+  if(str==null || str==='') return 0;
+  const clean = String(str).replace(/\./g,'').replace(',','.');
+  return parseFloat(clean)||0;
+}
+function maskCurrencyEvent(e){
+  const el = e.target;
+  let digits = el.value.replace(/\D/g,'');
+  if(!digits) digits='0';
+  digits = digits.replace(/^0+(?=\d)/,'');
+  el.value = formatCurrencyDigits(parseInt(digits,10)/100);
+}
+function wireCurrencyMasks(root){
+  (root||document).querySelectorAll('input.currency-mask').forEach(el=>{
+    el.addEventListener('input', maskCurrencyEvent);
+  });
+}
+
 function fieldHtml(f,val){
   const v = val==null?'':val;
   if(f.type==='select'){
@@ -532,6 +573,10 @@ function fieldHtml(f,val){
   }
   if(f.type==='textarea'){
     return `<div class="field"><label>${f.label}</label><textarea name="${f.name}" rows="2">${escapeHtml(v)}</textarea></div>`;
+  }
+  if(f.type==='currency'){
+    const display = v!==''? formatCurrencyDigits(v) : '';
+    return `<div class="field"><label>${f.label}</label><div class="currency-input"><span class="prefix">R$</span><input type="text" inputmode="decimal" autocomplete="off" class="currency-mask" name="${f.name}" value="${escapeHtml(display)}" placeholder="0,00" ${f.required?'required':''}></div></div>`;
   }
   return `<div class="field"><label>${f.label}</label><input type="${f.type}" name="${f.name}" value="${escapeHtml(v)}" ${f.required?'required':''} ${f.step?`step="${f.step}"`:''} ${f.min!=null?`min="${f.min}"`:''}></div>`;
 }
@@ -555,6 +600,7 @@ function openFormModal({title,fields,initial={},onSubmit,submitLabel,onDelete}){
   </div>`;
   $('#m-cancel').onclick = closeModal;
   $('.modal-backdrop').onclick=(e)=>{ if(e.target.dataset.close) closeModal(); };
+  wireCurrencyMasks(document.getElementById('modal-form'));
   if(onDelete){ $('#m-del').onclick = ()=>{ onDelete(); }; }
   $('#modal-form').onsubmit = (e)=>{
     e.preventDefault();
@@ -565,6 +611,7 @@ function openFormModal({title,fields,initial={},onSubmit,submitLabel,onDelete}){
     flat.forEach(f=>{
       if(f.type==='checkbox') values[f.name] = e.target.querySelector(`[name="${f.name}"]`).checked;
       else if(f.type==='number') values[f.name] = parseFloat(fd.get(f.name))||0;
+      else if(f.type==='currency') values[f.name] = parseCurrencyValue(fd.get(f.name));
       else values[f.name] = fd.get(f.name);
     });
     onSubmit(values);
@@ -594,6 +641,7 @@ function categoryOptions(type){
 function cardOptions(){ return [{value:'',label:'Nenhum'}].concat(state.cards.map(c=>({value:c.id,label:c.name}))); }
 
 /* ===================== DASHBOARD ===================== */
+let upcomingWindow = 7;
 RENDERERS.dashboard = function(){
   const cur = todayMonthKey();
   const s = monthSummary(cur);
@@ -609,7 +657,10 @@ RENDERERS.dashboard = function(){
     return a + Math.max(0,(inst.count-paid))*Number(inst.installmentValue);
   },0);
   const comprometido = totalDividas+totalParcelasFuturas;
-  const pctComprometido = s.plannedReceitas>0? (comprometido/s.plannedReceitas*100):0;
+  const mesesComprometido = s.plannedReceitas>0? (comprometido/s.plannedReceitas):0;
+  const ativos = Number(state.settings.currentBalance||0) + guardado;
+  const passivos = comprometido;
+  const patrimonioLiquido = ativos - passivos;
   const canSpend = canSpendNow(cur);
   const beColor = be.status==='verde'?'green':be.status==='amarelo'?'gold':'rust';
   const beText = be.status==='verde'?'Positivo — margem confortável':be.status==='amarelo'?'Atenção — margem baixa':'Déficit projetado';
@@ -627,6 +678,17 @@ RENDERERS.dashboard = function(){
       </div>
     </div>
 
+    <div class="net-worth-card">
+      <div>
+        <div class="stat-label">Patrimônio líquido</div>
+        <div class="stat-value ${patrimonioLiquido>=0?'pos':'neg'} num" style="font-size:30px">${fmtCurrency(patrimonioLiquido)}</div>
+      </div>
+      <div class="breakdown">
+        <div>Ativos (saldo + guardado)<strong class="num" style="color:var(--green)">${fmtCurrency(ativos)}</strong></div>
+        <div>Passivos (dívidas + parcelas)<strong class="num" style="color:var(--red)">${fmtCurrency(passivos)}</strong></div>
+      </div>
+    </div>
+
     <div class="grid grid-4">
       <div class="card clickable" data-goto="lancamentos"><div class="icon-badge ${s.saldoRealizado>=0?'green':'red'}">${icon('wallet',17)}</div><div class="stat-label">Saldo do mês</div><div class="stat-value ${s.saldoRealizado>=0?'pos':'neg'} num">${fmtCurrency(s.saldoRealizado)}</div><div class="stat-foot">Planejado: <span class="num">${fmtCurrency(s.saldoPlanejado)}</span></div></div>
       <div class="card clickable" data-goto="receitas"><div class="icon-badge green">${icon('trendingUp',17)}</div><div class="stat-label">Receitas do mês</div><div class="stat-value pos num">${fmtCurrency(s.realizedReceitas)}</div><div class="stat-foot">Previstas: <span class="num">${fmtCurrency(s.plannedReceitas)}</span></div></div>
@@ -636,9 +698,25 @@ RENDERERS.dashboard = function(){
     <div class="grid grid-4" style="margin-top:14px">
       <div class="card clickable" data-goto="dividas"><div class="icon-badge red">${icon('trendingDown',17)}</div><div class="stat-label">Total em dívidas</div><div class="stat-value neg num">${fmtCurrency(totalDividas)}</div><div class="stat-foot">Saldo restante</div></div>
       <div class="card clickable" data-goto="parcelamentos"><div class="icon-badge red">${icon('layers',17)}</div><div class="stat-label">Parcelas futuras</div><div class="stat-value neg num">${fmtCurrency(totalParcelasFuturas)}</div><div class="stat-foot">Restante a pagar</div></div>
-      <div class="card"><div class="icon-badge grey">${icon('sliders',17)}</div><div class="stat-label">Comprometido (próx. meses)</div><div class="stat-value num">${fmtCurrency(comprometido)}</div><div class="stat-foot">${pctComprometido.toFixed(0)}% da receita atual</div></div>
+      <div class="card"><div class="icon-badge grey">${icon('sliders',17)}</div><div class="stat-label">Comprometido (dívidas + parcelas)</div><div class="stat-value num">${fmtCurrency(comprometido)}</div><div class="stat-foot">≈ ${mesesComprometido.toFixed(1)} meses da sua renda atual</div></div>
       <div class="card"><div class="icon-badge ${acc>=0?'green':'red'}">${icon('barchart',17)}</div><div class="stat-label">Saldo acumulado</div><div class="stat-value ${acc>=0?'pos':'neg'} num">${fmtCurrency(acc)}</div><div class="stat-foot">Desde ${monthLabel(firstDataMonth())}</div></div>
     </div>
+
+    <div class="section-title"><h2>Próximos vencimentos</h2>
+      <div class="toolbar" style="margin:0">
+        <button class="subtab ${upcomingWindow===7?'active':''}" data-window="7" style="margin-right:10px">7 dias</button>
+        <button class="subtab ${upcomingWindow===30?'active':''}" data-window="30">30 dias</button>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:1px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div>
+        <div class="stat-label">Saldo atual em conta</div>
+        <div class="stat-value num">${fmtCurrency(state.settings.currentBalance||0)}</div>
+        <div class="stat-foot">${state.settings.currentBalanceDate? 'Informado em '+fmtDate(state.settings.currentBalanceDate) : 'Ainda não informado — o saldo projetado abaixo parte de R$ 0,00'}</div>
+      </div>
+      <button class="btn small" id="btn-edit-balance">${icon('edit',13)} Atualizar saldo</button>
+    </div>
+    <div class="table-wrap">${renderUpcomingList(upcomingItems(upcomingWindow), state.settings.currentBalance||0)}</div>
 
     <div class="section-title"><h2>Evolução do saldo</h2></div>
     <div class="card"><div class="chart-box"><canvas id="chart-dashboard-balance"></canvas></div></div>
@@ -654,8 +732,42 @@ RENDERERS.dashboard = function(){
     <div>${computeAlerts().map(a=>`<div class="alert-item ${a.sev==='rust'?'rust':''}" style="${a.sev==='green'?'background:var(--green-bg);color:var(--green)':a.sev==='grey'?'background:var(--panel-2);color:var(--ink-soft)':''}">${icon(a.sev==='green'?'checkCircle':a.sev==='grey'?'info':'alertTriangle',16)}<span>${escapeHtml(a.msg)}</span></div>`).join('')}</div>
   `;
   $$('#view-dashboard [data-goto]').forEach(c=>c.onclick=()=>switchView(c.dataset.goto));
+  $$('#view-dashboard [data-window]').forEach(b=>b.onclick=()=>{ upcomingWindow=parseInt(b.dataset.window); RENDERERS.dashboard(); });
+  $$('#view-dashboard [data-mark-paid]').forEach(b=>b.onclick=()=>{
+    const tx = state.transactions.find(x=>x.id===b.dataset.markPaid);
+    if(tx){ tx.status='pago'; saveState(); renderAll(); }
+  });
+  $('#btn-edit-balance').onclick=()=>{
+    openFormModal({
+      title:'Atualizar saldo atual em conta',
+      initial:{currentBalance:state.settings.currentBalance||0},
+      fields:[{name:'currentBalance',label:'Quanto você tem em conta agora',type:'currency',required:true}],
+      onSubmit(v){
+        state.settings.currentBalance = v.currentBalance;
+        state.settings.currentBalanceDate = todayISO();
+        saveState(); renderAll();
+      }
+    });
+  };
   balanceEvolutionChart('chart-dashboard-balance',5,6);
 };
+function renderUpcomingList(items, startingBalance){
+  if(!items.length) return `<div class="empty-state">${icon('calendar',28)}<strong>Nada por vir</strong><span>Nenhum lançamento pendente nesse período.</span></div>`;
+  let running = Number(startingBalance)||0;
+  return `<table><thead><tr><th></th><th>Data</th><th>Descrição</th><th class="right">Valor</th><th class="right">Saldo projetado</th><th></th></tr></thead><tbody>${items.map(t=>{
+    const label = t.daysUntil<0? `Atrasado há ${Math.abs(t.daysUntil)}d` : t.daysUntil===0? 'Hoje' : t.daysUntil===1? 'Amanhã' : `Em ${t.daysUntil} dias`;
+    const badgeClass = t.daysUntil<0? 'rust' : t.daysUntil<=2? 'gold' : 'grey';
+    running += t.type==='receita'? Number(t.value) : -Number(t.value);
+    return `<tr>
+      <td style="width:120px"><span class="badge ${badgeClass}">${label}</span></td>
+      <td>${fmtDate(t.date)}</td>
+      <td>${escapeHtml(t.description)}<span class="help-text" style="display:block;margin:0">${escapeHtml(t.category||'')}</span></td>
+      <td class="right num" style="color:${t.type==='receita'?'var(--green)':'var(--red)'}">${t.type==='receita'?'+':'-'}${fmtCurrency(t.value)}</td>
+      <td class="right num" style="color:${running>=0?'var(--ink)':'var(--red)'}">${fmtCurrency(running)}</td>
+      <td class="right"><button class="btn small" data-mark-paid="${t.id}">${icon('checkCircle',13)} Marcar pago</button></td>
+    </tr>`;
+  }).join('')}</tbody></table>`;
+}
 
 /* ===================== LANÇAMENTOS ===================== */
 let lancFilter = {mes:'todos',tipo:'todos',categoria:'todos',status:'todos'};
@@ -712,19 +824,21 @@ RENDERERS.lancamentos = function(){
   });
 };
 function sourceLabel(s){ return {recurring:'Recorrente',installment:'Parcela',debt:'Dívida',income:'Receita fixa'}[s]||''; }
-function openLancModal(t){
+function openLancModal(t, presetDate){
   const isEdit = !!t;
+  const d = presetDate || todayISO();
   openFormModal({
     title: isEdit?'Editar lançamento':'Novo lançamento',
-    initial: t || {date:todayISO(),month:todayMonthKey(),type:'despesa',status:'pendente',paymentMethod:'PIX'},
+    initial: t || {date:d,month:monthKeyOf(d),type:'despesa',status:'pendente',paymentMethod:'PIX'},
     fields:[
       {row:[{name:'type',label:'Tipo',type:'select',options:[{value:'despesa',label:'Despesa'},{value:'receita',label:'Receita'}]},
              {name:'status',label:'Status',type:'select',options:[{value:'pendente',label:'Pendente'},{value:'pago',label:'Pago'}]}]},
       {name:'description',label:'Descrição',type:'text',required:true},
       {row:[{name:'category',label:'Categoria',type:'select',options:state.categories.map(c=>({value:c.name,label:c.name}))},
-             {name:'value',label:'Valor (R$)',type:'number',step:'0.01',required:true}]},
+             {name:'value',label:'Valor',type:'currency',required:true}]},
       {row:[{name:'date',label:'Data',type:'date',required:true},
              {name:'paymentMethod',label:'Forma de pagamento',type:'select',options:['Dinheiro','PIX','Débito','Crédito','Transferência','Outro'].map(v=>({value:v,label:v}))}]},
+      {name:'cardId',label:'Cartão (se for compra no crédito)',type:'select',options:cardOptions()},
       {name:'month',label:'Mês de referência (competência)',type:'month',required:true},
       {name:'note',label:'Observação',type:'textarea'}
     ],
@@ -743,42 +857,85 @@ function openLancModal(t){
 }
 
 /* ===================== PLANEJAMENTO ===================== */
+let planDay = todayISO();
+const WEEKDAY_NAMES = ['Domingo','Segunda-feira','Terça-feira','Quarta-feira','Quinta-feira','Sexta-feira','Sábado'];
+function addDaysToISO(iso,n){
+  const d = new Date(iso+'T00:00:00');
+  d.setDate(d.getDate()+n);
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+}
+function dayLabel(iso){
+  const d = new Date(iso+'T00:00:00');
+  return `${WEEKDAY_NAMES[d.getDay()]}, ${d.getDate()} de ${MONTH_NAMES[d.getMonth()].toLowerCase()} de ${d.getFullYear()}`;
+}
+function balanceAsOfDate(iso){
+  const anchorDate = state.settings.currentBalanceDate;
+  const anchorBalance = Number(state.settings.currentBalance)||0;
+  if(anchorDate && iso > anchorDate){
+    // projeta pra frente: saldo atual + tudo que ainda está pendente até essa data
+    let total = anchorBalance;
+    state.transactions.forEach(t=>{
+      if(t.status==='pendente' && t.date && t.date<=iso){
+        total += t.type==='receita'? Number(t.value) : -Number(t.value);
+      }
+    });
+    return total;
+  }
+  // dia atual ou no passado: soma o que realmente foi pago/recebido até essa data
+  let total = 0;
+  state.transactions.forEach(t=>{
+    if(t.status==='pago' && t.date && t.date<=iso){
+      total += t.type==='receita'? Number(t.value) : -Number(t.value);
+    }
+  });
+  return total;
+}
 RENDERERS.planejamento = function(){
-  const s = monthSummary(planMonth);
-  const acc = accumulatedBalance(planMonth);
-  const catRows = Object.entries(s.byCategory).sort((a,b)=>b[1]-a[1]);
-  const receitaTxns = s.txns.filter(t=>t.type==='receita');
-  const guardadoMes = state.goals.reduce((a,g)=>a+ (g.contributions||[]).filter(c=>c.month===planMonth).reduce((x,c)=>x+Number(c.value),0),0);
+  const dayTxns = state.transactions.filter(t=>t.date===planDay).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+  const receitasDia = dayTxns.filter(t=>t.type==='receita').reduce((a,t)=>a+Number(t.value),0);
+  const despesasDia = dayTxns.filter(t=>t.type==='despesa').reduce((a,t)=>a+Number(t.value),0);
+  const saldo = balanceAsOfDate(planDay);
+  const isToday = planDay===todayISO();
+  const isPast = planDay<todayISO();
 
   $('#view-planejamento').innerHTML = `
     <div class="view-head">
-      <div><h1>Planejamento mensal</h1><div class="view-sub">Navegue entre meses para planejar receitas e despesas</div></div>
+      <div><h1>Planejamento</h1><div class="view-sub">Navegue dia a dia e veja o saldo projetado para cada data</div></div>
       <div class="month-nav">
         <button class="btn" id="plan-prev">${icon('chevronLeft',16)}</button>
-        <div class="month-label">${monthLabel(planMonth)}</div>
+        <div class="month-label" style="min-width:260px">${dayLabel(planDay)}</div>
         <button class="btn" id="plan-next">${icon('chevronRight',16)}</button>
+        ${!isToday?`<button class="btn small" id="plan-today">Hoje</button>`:''}
       </div>
     </div>
     <div class="grid grid-4">
-      <div class="card"><div class="stat-label">Total de receitas</div><div class="stat-value pos num">${fmtCurrency(s.plannedReceitas)}</div></div>
-      <div class="card"><div class="stat-label">Total de despesas</div><div class="stat-value neg num">${fmtCurrency(s.plannedDespesas)}</div></div>
-      <div class="card"><div class="stat-label">Saldo do mês</div><div class="stat-value ${s.saldoPlanejado>=0?'pos':'neg'} num">${fmtCurrency(s.saldoPlanejado)}</div></div>
-      <div class="card"><div class="stat-label">Saldo acumulado</div><div class="stat-value ${acc>=0?'pos':'neg'} num">${fmtCurrency(acc)}</div></div>
+      <div class="card"><div class="stat-label">Receitas do dia</div><div class="stat-value pos num">${fmtCurrency(receitasDia)}</div></div>
+      <div class="card"><div class="stat-label">Despesas do dia</div><div class="stat-value neg num">${fmtCurrency(despesasDia)}</div></div>
+      <div class="card"><div class="stat-label">Saldo do dia</div><div class="stat-value ${receitasDia-despesasDia>=0?'pos':'neg'} num">${fmtCurrency(receitasDia-despesasDia)}</div></div>
+      <div class="card"><div class="stat-label">Saldo ${isPast?'real':'projetado'} até esse dia</div><div class="stat-value ${saldo>=0?'pos':'neg'} num">${fmtCurrency(saldo)}</div><div class="stat-foot">${state.settings.currentBalanceDate? '' : 'Informe seu saldo atual no Dashboard para projeções futuras precisas'}</div></div>
     </div>
 
-    <div class="section-title"><h2>Receitas do mês</h2></div>
-    <div class="table-wrap"><table><thead><tr><th>Descrição</th><th>Categoria</th><th class="right">Valor</th><th>Status</th></tr></thead>
-    <tbody>${receitaTxns.length? receitaTxns.map(t=>`<tr><td>${escapeHtml(t.description)}</td><td>${escapeHtml(t.category||'—')}</td><td class="right num">${fmtCurrency(t.value)}</td><td>${t.status==='pago'?'<span class="badge green">Pago</span>':'<span class="badge gold">Pendente</span>'}</td></tr>`).join(''):'<tr class="empty-row"><td colspan="4">Sem receitas previstas neste mês.</td></tr>'}</tbody></table></div>
-
-    <div class="section-title"><h2>Despesas por categoria</h2></div>
-    <div class="table-wrap"><table><thead><tr><th>Categoria</th><th class="right">Total</th><th class="right">% do mês</th></tr></thead>
-    <tbody>${catRows.length? catRows.map(([cat,val])=>`<tr><td>${escapeHtml(cat)}</td><td class="right num">${fmtCurrency(val)}</td><td class="right num">${(s.plannedDespesas? val/s.plannedDespesas*100:0).toFixed(1)}%</td></tr>`).join(''):'<tr class="empty-row"><td colspan="3">Sem despesas neste mês.</td></tr>'}</tbody></table></div>
-
-    <div class="section-title"><h2>Guardado neste mês</h2></div>
-    <div class="card"><div class="stat-value num">${fmtCurrency(guardadoMes)}</div><div class="stat-foot">Total aportado em metas em ${monthLabel(planMonth)}</div></div>
+    <div class="section-title"><h2>Lançamentos de ${fmtDate(planDay)}</h2>
+      <button class="btn small" id="btn-new-lanc-day">${icon('plus',13)} Novo lançamento nesse dia</button>
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Descrição</th><th>Categoria</th><th>Tipo</th><th class="right">Valor</th><th>Status</th><th></th></tr></thead>
+      <tbody>${dayTxns.length? dayTxns.map(t=>`<tr>
+        <td>${escapeHtml(t.description)}${t.source!=='manual'?`<span class="badge grey" style="margin-left:6px">${sourceLabel(t.source)}</span>`:''}</td>
+        <td>${escapeHtml(t.category||'—')}</td>
+        <td>${t.type==='receita'?'<span class="badge green">Receita</span>':'<span class="badge rust">Despesa</span>'}</td>
+        <td class="right num">${fmtCurrency(t.value)}</td>
+        <td>${t.status==='pago'?'<span class="badge green">Pago</span>':'<span class="badge gold">Pendente</span>'}</td>
+        <td><button class="icon-btn" data-edit-day="${t.id}" title="Editar">${icon('edit',15)}</button></td>
+      </tr>`).join('') : emptyRow(6,'calendar','Nada nesse dia','Nenhum lançamento registrado para essa data.')}</tbody>
+    </table></div>
   `;
-  $('#plan-prev').onclick=()=>{planMonth=addMonthsToKey(planMonth,-1);RENDERERS.planejamento();};
-  $('#plan-next').onclick=()=>{planMonth=addMonthsToKey(planMonth,1);RENDERERS.planejamento();};
+  $('#plan-prev').onclick=()=>{planDay=addDaysToISO(planDay,-1);RENDERERS.planejamento();};
+  $('#plan-next').onclick=()=>{planDay=addDaysToISO(planDay,1);RENDERERS.planejamento();};
+  const todayBtn = $('#plan-today');
+  if(todayBtn) todayBtn.onclick=()=>{planDay=todayISO();RENDERERS.planejamento();};
+  $('#btn-new-lanc-day').onclick=()=>openLancModal(null, planDay);
+  $$('[data-edit-day]').forEach(b=>b.onclick=()=>openLancModal(dayTxns.find(t=>t.id===b.dataset.editDay)));
 };
 
 /* ===================== CARTÃO ===================== */
@@ -814,7 +971,7 @@ function openCardModal(c){
   openFormModal({
     title: c?'Editar cartão':'Novo cartão', initial: c||{},
     fields:[{name:'name',label:'Nome do cartão',type:'text',required:true},
-      {row:[{name:'limit',label:'Limite (R$)',type:'number',step:'0.01'},{name:'closingDay',label:'Dia de fechamento',type:'number'}]},
+      {row:[{name:'limit',label:'Limite',type:'currency'},{name:'closingDay',label:'Dia de fechamento',type:'number'}]},
       {name:'dueDay',label:'Dia de vencimento',type:'number'}],
     onSubmit(v){ if(c) Object.assign(c,v); else state.cards.push({id:uid(),...v}); saveState(); RENDERERS.cartao(); },
     onDelete: c? ()=>{confirmModal('Excluir cartão?','Tem certeza?',()=>{state.cards=state.cards.filter(x=>x.id!==c.id);saveState();closeModal();RENDERERS.cartao();});}:null
@@ -828,7 +985,7 @@ function openPurchaseModal(){
       {name:'name',label:'Descrição da compra',type:'text',required:true},
       {row:[{name:'category',label:'Categoria',type:'select',options:categoryOptions('despesa')},
              {name:'cardId',label:'Cartão',type:'select',options:state.cards.map(c=>({value:c.id,label:c.name}))}]},
-      {row:[{name:'totalValue',label:'Valor total (R$)',type:'number',step:'0.01',required:true},
+      {row:[{name:'totalValue',label:'Valor total',type:'currency',required:true},
              {name:'count',label:'Nº de parcelas',type:'number',required:true}]},
       {name:'startMonth',label:'Mês da 1ª parcela',type:'month',required:true}
     ],
@@ -879,7 +1036,7 @@ function openInstallmentModal(inst){
       {name:'name',label:'Nome',type:'text',required:true},
       {row:[{name:'category',label:'Categoria',type:'select',options:categoryOptions('despesa')},
              {name:'cardId',label:'Cartão (opcional)',type:'select',options:cardOptions()}]},
-      {row:[{name:'totalValue',label:'Valor total (R$)',type:'number',step:'0.01',required:true},
+      {row:[{name:'totalValue',label:'Valor total',type:'currency',required:true},
              {name:'count',label:'Nº de parcelas',type:'number',required:true}]},
       {name:'startMonth',label:'Mês da 1ª parcela',type:'month',required:true},
       {name:'note',label:'Observação',type:'textarea'}
@@ -956,8 +1113,8 @@ function openDebtModal(d){
     fields:[
       {name:'name',label:'Nome',type:'text',required:true},
       {name:'description',label:'Descrição',type:'text'},
-      {row:[{name:'originalValue',label:'Valor original (R$)',type:'number',step:'0.01',required:true},
-             {name:'installmentValue',label:'Valor da parcela (R$)',type:'number',step:'0.01',required:true}]},
+      {row:[{name:'originalValue',label:'Valor original',type:'currency',required:true},
+             {name:'installmentValue',label:'Valor da parcela',type:'currency',required:true}]},
       {row:[{name:'count',label:'Nº de parcelas',type:'number',required:true},
              {name:'interest',label:'Juros (% a.m., opcional)',type:'number',step:'0.01'}]},
       {row:[{name:'startMonth',label:'Mês da 1ª parcela',type:'month',required:true},
@@ -1008,7 +1165,7 @@ function openIncomeModal(inc){
       {name:'name',label:'Nome',type:'text',required:true},
       {row:[{name:'type',label:'Tipo',type:'select',options:[{value:'fixa',label:'Fixa'},{value:'variavel',label:'Variável'},{value:'temporaria',label:'Temporária'}]},
              {name:'category',label:'Categoria',type:'select',options:categoryOptions('receita')}]},
-      {row:[{name:'value',label:'Valor (R$)',type:'number',step:'0.01',required:true},
+      {row:[{name:'value',label:'Valor',type:'currency',required:true},
              {name:'frequency',label:'Recorrência',type:'select',options:[{value:'mensal',label:'Mensal'},{value:'unica',label:'Única'}]}]},
       {row:[{name:'startDate',label:'Data de recebimento',type:'date',required:true},{name:'day',label:'Dia do mês',type:'number'}]},
       {name:'monthOffset',label:'Contar como receita de',type:'select',options:[
@@ -1068,7 +1225,7 @@ function openRecModal(r){
     fields:[
       {name:'name',label:'Nome',type:'text',required:true},
       {row:[{name:'category',label:'Categoria',type:'select',options:categoryOptions('despesa')},
-             {name:'value',label:'Valor (R$)',type:'number',step:'0.01',required:true}]},
+             {name:'value',label:'Valor',type:'currency',required:true}]},
       {row:[{name:'day',label:'Dia do mês',type:'number'},{name:'startDate',label:'Início',type:'date',required:true}]},
       {name:'monthOffset',label:'Contar como despesa de',type:'select',options:[
         {value:0,label:'Mesmo mês da cobrança'},
@@ -1116,7 +1273,7 @@ RENDERERS.metas = function(){
   $$('[data-del-goal]').forEach(b=>b.onclick=()=>confirmModal('Excluir meta?','Tem certeza?',()=>{state.goals=state.goals.filter(g=>g.id!==b.dataset.delGoal);saveState();RENDERERS.metas();}));
   $$('[data-contribute]').forEach(b=>b.onclick=()=>{
     const g = state.goals.find(x=>x.id===b.dataset.contribute);
-    openFormModal({title:'Registrar aporte em "'+g.name+'"',initial:{value:g.monthlyPlanned||0},fields:[{name:'value',label:'Valor guardado (R$)',type:'number',step:'0.01',required:true}],
+    openFormModal({title:'Registrar aporte em "'+g.name+'"',initial:{value:g.monthlyPlanned||0},fields:[{name:'value',label:'Valor guardado',type:'currency',required:true}],
       onSubmit(v){
         g.currentValue = Number(g.currentValue||0)+Number(v.value);
         g.contributions = g.contributions||[]; g.contributions.push({month:todayMonthKey(),value:v.value});
@@ -1131,9 +1288,9 @@ function openGoalModal(g){
     initial: g||{currentValue:0},
     fields:[
       {name:'name',label:'Nome da meta',type:'text',required:true},
-      {row:[{name:'targetValue',label:'Valor objetivo (R$)',type:'number',step:'0.01',required:true},
-             {name:'currentValue',label:'Valor atual (R$)',type:'number',step:'0.01'}]},
-      {row:[{name:'deadline',label:'Prazo (opcional)',type:'date'},{name:'monthlyPlanned',label:'Aporte mensal planejado (R$)',type:'number',step:'0.01'}]}
+      {row:[{name:'targetValue',label:'Valor objetivo',type:'currency',required:true},
+             {name:'currentValue',label:'Valor atual',type:'currency'}]},
+      {row:[{name:'deadline',label:'Prazo (opcional)',type:'date'},{name:'monthlyPlanned',label:'Aporte mensal planejado',type:'currency'}]}
     ],
     onSubmit(v){ if(isEdit) Object.assign(g,v); else state.goals.push({id:uid(),contributions:[],...v}); saveState(); renderAll(); },
     onDelete: isEdit? ()=>{confirmModal('Excluir meta?','Tem certeza?',()=>{state.goals=state.goals.filter(x=>x.id!==g.id);saveState();closeModal();renderAll();});}:null
@@ -1226,16 +1383,17 @@ function renderProjecao(){
 function renderSimulador(){
   return `<div class="card" style="max-width:520px">
     <p style="font-size:13.5px;color:var(--ink-soft);margin-top:0">Teste cenários sem alterar seus dados reais.</p>
-    <div class="field-row"><div class="field"><label>Variação de receita (R$)</label><input type="number" step="0.01" id="sim-receita" value="0"></div>
-    <div class="field"><label>Variação de despesa (R$)</label><input type="number" step="0.01" id="sim-despesa" value="0"></div></div>
+    <div class="field-row"><div class="field"><label>Variação de receita</label><div class="currency-input"><span class="prefix">R$</span><input type="text" inputmode="decimal" class="currency-mask" id="sim-receita" value="0,00"></div></div>
+    <div class="field"><label>Variação de despesa</label><div class="currency-input"><span class="prefix">R$</span><input type="text" inputmode="decimal" class="currency-mask" id="sim-despesa" value="0,00"></div></div></div>
     <button class="btn primary" id="sim-run">Simular</button>
     <div id="sim-result" style="margin-top:16px"></div>
   </div>`;
 }
 function wireSimulador(){
+  wireCurrencyMasks(document.getElementById('report-body'));
   $('#sim-run').onclick=()=>{
-    const dR = parseFloat($('#sim-receita').value)||0;
-    const dD = parseFloat($('#sim-despesa').value)||0;
+    const dR = parseCurrencyValue($('#sim-receita').value);
+    const dD = parseCurrencyValue($('#sim-despesa').value);
     const proj = projection(todayMonthKey(),12).map(p=>({...p,receitas:p.receitas+dR,despesas:p.despesas+dD,saldo:(p.receitas+dR)-(p.despesas+dD)}));
     let acc = accumulatedBalance(addMonthsToKey(todayMonthKey(),-1));
     proj.forEach(p=>{acc+=p.saldo;p.saldoAcumulado=acc;});
@@ -1256,10 +1414,13 @@ RENDERERS.configuracoes = function(){
         <form id="settings-form">
           <div class="field"><label>Seu nome</label><input name="nome" value="${escapeHtml(st.nome||'')}"></div>
           <div class="field-row">
-            <div class="field"><label>Salário padrão (R$)</label><input type="number" step="0.01" name="salarioPadrao" value="${st.salarioPadrao||0}"></div>
-            <div class="field"><label>Meta de economia mensal (R$)</label><input type="number" step="0.01" name="metaEconomiaMensal" value="${st.metaEconomiaMensal||0}"></div>
+            <div class="field"><label>Salário padrão</label><div class="currency-input"><span class="prefix">R$</span><input type="text" inputmode="decimal" class="currency-mask" name="salarioPadrao" value="${formatCurrencyDigits(st.salarioPadrao||0)}"></div></div>
+            <div class="field"><label>Meta de economia mensal</label><div class="currency-input"><span class="prefix">R$</span><input type="text" inputmode="decimal" class="currency-mask" name="metaEconomiaMensal" value="${formatCurrencyDigits(st.metaEconomiaMensal||0)}"></div></div>
           </div>
           <div class="field"><label>Primeiro dia do mês</label><input type="number" min="1" max="28" name="primeiroDiaMes" value="${st.primeiroDiaMes||1}"></div>
+          <div class="field"><label>Saldo atual em conta</label><div class="currency-input"><span class="prefix">R$</span><input type="text" inputmode="decimal" class="currency-mask" name="currentBalance" value="${formatCurrencyDigits(st.currentBalance||0)}"></div>
+            <div class="help-text" style="margin-top:6px">${st.currentBalanceDate? 'Última atualização: '+fmtDate(st.currentBalanceDate) : 'Nunca informado'}</div>
+          </div>
           <button class="btn primary" type="submit">Salvar preferências</button>
         </form>
       </div>
@@ -1279,13 +1440,17 @@ RENDERERS.configuracoes = function(){
       <button class="btn" id="btn-export">Exportar dados (JSON)</button>
     </div>
   `;
+  wireCurrencyMasks(document.getElementById('settings-form'));
   $('#settings-form').onsubmit=(e)=>{
     e.preventDefault();
     const fd = new FormData(e.target);
     state.settings.nome = fd.get('nome');
-    state.settings.salarioPadrao = parseFloat(fd.get('salarioPadrao'))||0;
-    state.settings.metaEconomiaMensal = parseFloat(fd.get('metaEconomiaMensal'))||0;
+    state.settings.salarioPadrao = parseCurrencyValue(fd.get('salarioPadrao'));
+    state.settings.metaEconomiaMensal = parseCurrencyValue(fd.get('metaEconomiaMensal'));
     state.settings.primeiroDiaMes = parseInt(fd.get('primeiroDiaMes'))||1;
+    const newBalance = parseCurrencyValue(fd.get('currentBalance'));
+    if(newBalance !== state.settings.currentBalance){ state.settings.currentBalanceDate = todayISO(); }
+    state.settings.currentBalance = newBalance;
     saveState(true);
     renderAll();
   };
