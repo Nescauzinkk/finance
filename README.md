@@ -1,4 +1,4 @@
-# Razão — Controle Financeiro Pessoal
+# Kivo — Controle Financeiro Pessoal
 
 Aplicação web para controle financeiro pessoal: receitas, despesas, cartão de
 crédito, parcelamentos, dívidas, recorrentes, metas, planejamento mensal,
