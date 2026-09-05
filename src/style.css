@@ -172,7 +172,7 @@ select{appearance:none;-webkit-appearance:none;background-image:url("data:image/
 .tag-essential{font-size:9.5px;color:var(--yellow);border:1px solid var(--yellow-dim);padding:1px 5px;margin-left:6px;font-weight:700;text-transform:uppercase;}
 .subtabs{display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid var(--line);}
 .subtab{padding:9px 2px;margin-right:22px;border:none;background:none;font-size:13px;color:var(--ink-soft);border-bottom:2px solid transparent;font-weight:600;}
-.subtab.active{color:var(--ink);border-color:var(--green);}
+.subtab.active{color:var(--ink);border-color:var(--purple);}
 .help-text{font-size:12px;color:var(--ink-dim);margin-top:-4px;margin-bottom:14px;}
 .status-banner{padding:14px 16px;border-radius:var(--r-lg);display:flex;align-items:center;gap:12px;margin-bottom:20px;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--c,var(--green));}
 .status-banner h3{font-size:15px;margin-bottom:2px;color:var(--ink);}
