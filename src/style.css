@@ -209,3 +209,11 @@ select{appearance:none;-webkit-appearance:none;background-image:url("data:image/
 
 .brand-row{display:flex;align-items:center;gap:9px;}
 .brand{font-family:'Space Grotesk',sans-serif;font-weight:700;color:#fff;font-size:19px;}
+
+.net-worth-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:20px 22px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;}
+.net-worth-card .breakdown{display:flex;gap:22px;flex-wrap:wrap;}
+.net-worth-card .breakdown div{font-size:12px;color:var(--ink-soft);}
+.net-worth-card .breakdown strong{display:block;font-family:'Space Grotesk',sans-serif;font-size:15px;color:var(--ink);margin-top:2px;}
+
+.nav-divider{width:1px;background:var(--line);margin:12px 6px;flex-shrink:0;}
+.topbar-right .nav-item[data-view="configuracoes"]{padding:0 8px;}

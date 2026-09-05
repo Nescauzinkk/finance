@@ -469,18 +469,10 @@ function computeAlerts(){
   return alerts;
 }
 function cardUsed(cardId){
-  const cur = todayMonthKey();
-  let used=0;
-  state.installments.forEach(inst=>{
-    if(inst.cardId!==cardId) return;
-    const lastMonth = addMonthsToKey(inst.startMonth,inst.count-1);
-    for(let i=0;i<inst.count;i++){
-      const m = addMonthsToKey(inst.startMonth,i);
-      if(m>=cur) used += Number(inst.installmentValue);
-    }
-    void lastMonth;
-  });
-  return used;
+  // soma tudo que ainda está pendente (não pago) vinculado a esse cartão — parcelamentos e lançamentos manuais no crédito
+  return state.transactions
+    .filter(t=>t.cardId===cardId && t.type==='despesa' && t.status==='pendente')
+    .reduce((a,t)=>a+Number(t.value),0);
 }
 function installmentsPaidCount(sourceType,id){
   return state.transactions.filter(t=>t.source===sourceType && t.sourceId===id && t.status==='pago').length;
@@ -631,7 +623,10 @@ RENDERERS.dashboard = function(){
     return a + Math.max(0,(inst.count-paid))*Number(inst.installmentValue);
   },0);
   const comprometido = totalDividas+totalParcelasFuturas;
-  const pctComprometido = s.plannedReceitas>0? (comprometido/s.plannedReceitas*100):0;
+  const mesesComprometido = s.plannedReceitas>0? (comprometido/s.plannedReceitas):0;
+  const ativos = Number(state.settings.currentBalance||0) + guardado;
+  const passivos = comprometido;
+  const patrimonioLiquido = ativos - passivos;
   const canSpend = canSpendNow(cur);
   const beColor = be.status==='verde'?'green':be.status==='amarelo'?'gold':'rust';
   const beText = be.status==='verde'?'Positivo — margem confortável':be.status==='amarelo'?'Atenção — margem baixa':'Déficit projetado';
@@ -649,6 +644,17 @@ RENDERERS.dashboard = function(){
       </div>
     </div>
 
+    <div class="net-worth-card">
+      <div>
+        <div class="stat-label">Patrimônio líquido</div>
+        <div class="stat-value ${patrimonioLiquido>=0?'pos':'neg'} num" style="font-size:30px">${fmtCurrency(patrimonioLiquido)}</div>
+      </div>
+      <div class="breakdown">
+        <div>Ativos (saldo + guardado)<strong class="num" style="color:var(--green)">${fmtCurrency(ativos)}</strong></div>
+        <div>Passivos (dívidas + parcelas)<strong class="num" style="color:var(--red)">${fmtCurrency(passivos)}</strong></div>
+      </div>
+    </div>
+
     <div class="grid grid-4">
       <div class="card clickable" data-goto="lancamentos"><div class="icon-badge ${s.saldoRealizado>=0?'green':'red'}">${icon('wallet',17)}</div><div class="stat-label">Saldo do mês</div><div class="stat-value ${s.saldoRealizado>=0?'pos':'neg'} num">${fmtCurrency(s.saldoRealizado)}</div><div class="stat-foot">Planejado: <span class="num">${fmtCurrency(s.saldoPlanejado)}</span></div></div>
       <div class="card clickable" data-goto="receitas"><div class="icon-badge green">${icon('trendingUp',17)}</div><div class="stat-label">Receitas do mês</div><div class="stat-value pos num">${fmtCurrency(s.realizedReceitas)}</div><div class="stat-foot">Previstas: <span class="num">${fmtCurrency(s.plannedReceitas)}</span></div></div>
@@ -658,7 +664,7 @@ RENDERERS.dashboard = function(){
     <div class="grid grid-4" style="margin-top:14px">
       <div class="card clickable" data-goto="dividas"><div class="icon-badge red">${icon('trendingDown',17)}</div><div class="stat-label">Total em dívidas</div><div class="stat-value neg num">${fmtCurrency(totalDividas)}</div><div class="stat-foot">Saldo restante</div></div>
       <div class="card clickable" data-goto="parcelamentos"><div class="icon-badge red">${icon('layers',17)}</div><div class="stat-label">Parcelas futuras</div><div class="stat-value neg num">${fmtCurrency(totalParcelasFuturas)}</div><div class="stat-foot">Restante a pagar</div></div>
-      <div class="card"><div class="icon-badge grey">${icon('sliders',17)}</div><div class="stat-label">Comprometido (próx. meses)</div><div class="stat-value num">${fmtCurrency(comprometido)}</div><div class="stat-foot">${pctComprometido.toFixed(0)}% da receita atual</div></div>
+      <div class="card"><div class="icon-badge grey">${icon('sliders',17)}</div><div class="stat-label">Comprometido (dívidas + parcelas)</div><div class="stat-value num">${fmtCurrency(comprometido)}</div><div class="stat-foot">≈ ${mesesComprometido.toFixed(1)} meses da sua renda atual</div></div>
       <div class="card"><div class="icon-badge ${acc>=0?'green':'red'}">${icon('barchart',17)}</div><div class="stat-label">Saldo acumulado</div><div class="stat-value ${acc>=0?'pos':'neg'} num">${fmtCurrency(acc)}</div><div class="stat-foot">Desde ${monthLabel(firstDataMonth())}</div></div>
     </div>
 
@@ -798,6 +804,7 @@ function openLancModal(t, presetDate){
              {name:'value',label:'Valor (R$)',type:'number',step:'0.01',required:true}]},
       {row:[{name:'date',label:'Data',type:'date',required:true},
              {name:'paymentMethod',label:'Forma de pagamento',type:'select',options:['Dinheiro','PIX','Débito','Crédito','Transferência','Outro'].map(v=>({value:v,label:v}))}]},
+      {name:'cardId',label:'Cartão (se for compra no crédito)',type:'select',options:cardOptions()},
       {name:'month',label:'Mês de referência (competência)',type:'month',required:true},
       {name:'note',label:'Observação',type:'textarea'}
     ],
