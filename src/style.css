@@ -43,17 +43,16 @@ input,select,textarea{font-family:inherit;font-size:14px;}
 .app{display:flex;flex-direction:column;min-height:100vh;}
 .topbar{
   position:sticky;top:0;z-index:40;background:var(--bg);border-bottom:1px solid var(--line);
-  display:flex;align-items:center;gap:26px;padding:0 28px;height:56px;
+  display:flex;flex-direction:column;padding:0;
 }
-.topbar-brand{display:flex;align-items:center;gap:9px;font-family:'Sora',sans-serif;font-size:17px;font-weight:700;color:#fff;flex-shrink:0;margin-right:6px;}
-.logo-mark{width:28px;height:26px;object-fit:contain;display:block;border-radius:5px;}
-.logo-mark.small{width:24px;height:22px;}
+.topbar-top{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 28px;}
+.topbar-brand{display:flex;align-items:center;gap:9px;font-family:'Sora',sans-serif;font-size:17px;font-weight:700;color:#fff;flex-shrink:0;}
 .topbar-brand span{color:#fff;}
-.topbar-nav{display:flex;align-items:stretch;gap:2px;overflow-x:auto;flex:1;height:56px;scrollbar-width:none;}
+.topbar-nav{display:flex;align-items:stretch;gap:2px;overflow-x:auto;width:100%;height:48px;padding:0 28px;border-top:1px solid var(--line-soft);scrollbar-width:none;}
 .topbar-nav::-webkit-scrollbar{display:none;}
 .nav-item{
   display:flex;align-items:center;gap:7px;white-space:nowrap;background:none;border:none;border-bottom:2px solid transparent;
-  color:var(--ink-soft);padding:0 12px;font-size:13px;font-weight:600;height:100%;
+  color:var(--ink-soft);padding:0 12px;font-size:13px;font-weight:600;height:100%;flex-shrink:0;
 }
 .nav-item .ic{color:var(--ink-dim);}
 .nav-item:hover{color:var(--ink);}
@@ -77,11 +76,9 @@ input,select,textarea{font-family:inherit;font-size:14px;}
 .view-sub{color:var(--ink-soft);font-size:13px;margin-top:4px;}
 
 @media(max-width:860px){
-  .topbar{padding:10px 14px 0;gap:10px;height:auto;flex-wrap:wrap;align-items:center;}
+  .topbar-top{padding:10px 14px;}
+  .topbar-nav{padding:0 14px;height:46px;}
   .content{padding:18px 14px;}
-  .topbar-brand{order:1;}
-  .topbar-right{order:2;margin-left:auto;}
-  .topbar-nav{order:3;flex:0 0 100%;width:100%;height:46px;margin-top:6px;border-top:1px solid var(--line-soft);}
   .nav-item{font-size:12.5px;padding:0 10px;}
   .nav-divider{margin:11px 4px;}
   .topbar-user{display:none;}

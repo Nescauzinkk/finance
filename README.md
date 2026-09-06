@@ -110,3 +110,23 @@ segura via RLS. Se no futuro você quiser evoluir para tabelas relacionais
 separadas (uma tabela por tipo de dado, como no desenho original do
 projeto), a lógica de cálculo em `src/main.js` pode ser adaptada
 gradualmente sem precisar reescrever a interface.
+
+## Direitos autorais
+
+Copyright © 2026 Aldo. Todos os direitos reservados. Este projeto é de uso
+pessoal e de pessoas explicitamente convidadas pelo autor — veja o arquivo
+[`LICENSE`](./LICENSE) para os termos completos.
+
+## Convidando outras pessoas para usar
+
+Como cada usuário só enxerga seus próprios dados (isolados por Row Level
+Security no Supabase), é seguro deixar outras pessoas criarem contas e
+usarem o mesmo app — cada uma terá seus lançamentos, receitas, dívidas etc.
+completamente separados dos seus.
+
+Antes de convidar alguém, confira no painel do Supabase, em
+**Authentication > Providers > Email**, se a opção **"Allow new users to
+sign up"** está **ativada** (se você a desativou antes por segurança,
+reative temporariamente ou apenas enquanto convida as pessoas). Depois
+disso, a pessoa só precisa acessar o link do app e clicar em "Criar conta".
+

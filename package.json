@@ -1,8 +1,11 @@
 {
-  "name": "controle-financeiro-pessoal",
+  "name": "kivo-controle-financeiro-pessoal",
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "author": "Aldo",
+  "license": "SEE LICENSE IN LICENSE",
+  "description": "Kivo — Controle Financeiro Pessoal. Copyright © 2026 Aldo. Todos os direitos reservados.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

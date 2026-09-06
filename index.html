@@ -39,7 +39,14 @@
 
 <div class="app" id="app-root" style="display:none">
   <header class="topbar">
-    <div class="topbar-brand"><img src="/logo-wordmark.png" alt="Kivo" class="logo-wordmark topbar-logo"></div>
+    <div class="topbar-top">
+      <div class="topbar-brand"><img src="/logo-wordmark.png" alt="Kivo" class="logo-wordmark topbar-logo"></div>
+      <div class="topbar-right">
+        <span id="sidebar-user" class="topbar-user"></span>
+        <button class="nav-item" data-view="configuracoes" data-icon="sliders" title="Configurações"></button>
+        <button class="nav-item" id="btn-logout" data-icon="logout"><span class="label">Sair</span></button>
+      </div>
+    </div>
     <nav class="topbar-nav">
       <button class="nav-item" data-view="dashboard" data-icon="dashboard"><span class="label">Dashboard</span></button>
       <button class="nav-item" data-view="planejamento" data-icon="calendar"><span class="label">Planejamento</span></button>
@@ -56,11 +63,6 @@
       <span class="nav-divider"></span>
       <button class="nav-item" data-view="relatorios" data-icon="barchart"><span class="label">Relatórios</span></button>
     </nav>
-    <div class="topbar-right">
-      <span id="sidebar-user" class="topbar-user"></span>
-      <button class="nav-item" data-view="configuracoes" data-icon="sliders" title="Configurações"></button>
-      <button class="nav-item" id="btn-logout" data-icon="logout"><span class="label">Sair</span></button>
-    </div>
   </header>
   <main class="content">
     <div id="view-dashboard" class="view"></div>
@@ -75,7 +77,7 @@
     <div id="view-relatorios" class="view"></div>
     <div id="view-configuracoes" class="view"></div>
   </main>
-  <footer class="site-footer">Seus dados ficam salvos com segurança no Supabase · Feito por <strong>Aldo</strong></footer>
+  <footer class="site-footer">© 2026 <strong>Aldo</strong>. Todos os direitos reservados. · Seus dados ficam salvos com segurança no Supabase.</footer>
 </div>
 <div id="modal-root"></div>
 <script type="module" src="/src/main.js"></script>
