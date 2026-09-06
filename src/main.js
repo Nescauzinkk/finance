@@ -78,7 +78,7 @@ const CHART_COLORS = {
 };
 const chartInstances = {};
 Chart.defaults.color = CHART_COLORS.inkSoft;
-Chart.defaults.font.family = "'Manrope', sans-serif";
+Chart.defaults.font.family = "'Plus Jakarta Sans', sans-serif";
 Chart.defaults.font.size = 12;
 
 function renderChart(canvasId, config){
@@ -785,7 +785,7 @@ RENDERERS.lancamentos = function(){
     <div class="toolbar">
       <select id="f-mes"><option value="todos">Todos os meses</option>${monthsSet.map(m=>`<option value="${m}" ${lancFilter.mes===m?'selected':''}>${monthLabel(m)}</option>`).join('')}</select>
       <select id="f-tipo"><option value="todos">Todos os tipos</option><option value="receita" ${lancFilter.tipo==='receita'?'selected':''}>Receita</option><option value="despesa" ${lancFilter.tipo==='despesa'?'selected':''}>Despesa</option></select>
-      <select id="f-cat"><option value="todos">Todas as categorias</option>${state.categories.map(c=>`<option value="${c.name}" ${lancFilter.categoria===c.name?'selected':''}>${c.name}</option>`).join('')}</select>
+      <select id="f-cat"><option value="todos">Todas as categorias</option>${state.categories.map(c=>`<option value="${escapeHtml(c.name)}" ${lancFilter.categoria===c.name?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select>
       <select id="f-status"><option value="todos">Todos os status</option><option value="pago" ${lancFilter.status==='pago'?'selected':''}>Pago</option><option value="pendente" ${lancFilter.status==='pendente'?'selected':''}>Pendente</option></select>
     </div>
     <div class="table-wrap"><table>
@@ -1524,3 +1524,10 @@ async function bootApp(){
   if(loader) loader.classList.add('hidden');
 }
 init();
+
+/* ===================== PWA ===================== */
+if('serviceWorker' in navigator){
+  window.addEventListener('load', ()=>{
+    navigator.serviceWorker.register('/sw.js').catch(()=>{});
+  });
+}
