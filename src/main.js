@@ -905,6 +905,8 @@ RENDERERS.planejamento = function(){
         <button class="btn" id="plan-prev">${icon('chevronLeft',16)}</button>
         <div class="month-label" style="min-width:260px">${dayLabel(planDay)}</div>
         <button class="btn" id="plan-next">${icon('chevronRight',16)}</button>
+        <button class="btn" id="plan-jump" title="Ir para uma data específica">${icon('calendar',16)}</button>
+        <input type="date" id="plan-datepicker" value="${planDay}" style="position:absolute;opacity:0;pointer-events:none;width:1px;height:1px">
         ${!isToday?`<button class="btn small" id="plan-today">Hoje</button>`:''}
       </div>
     </div>
@@ -932,6 +934,11 @@ RENDERERS.planejamento = function(){
   `;
   $('#plan-prev').onclick=()=>{planDay=addDaysToISO(planDay,-1);RENDERERS.planejamento();};
   $('#plan-next').onclick=()=>{planDay=addDaysToISO(planDay,1);RENDERERS.planejamento();};
+  $('#plan-jump').onclick=()=>{
+    const dp = $('#plan-datepicker');
+    if(dp.showPicker){ dp.showPicker(); } else { dp.click(); dp.focus(); }
+  };
+  $('#plan-datepicker').onchange=(e)=>{ if(e.target.value){ planDay=e.target.value; RENDERERS.planejamento(); } };
   const todayBtn = $('#plan-today');
   if(todayBtn) todayBtn.onclick=()=>{planDay=todayISO();RENDERERS.planejamento();};
   $('#btn-new-lanc-day').onclick=()=>openLancModal(null, planDay);
@@ -1299,13 +1306,17 @@ function openGoalModal(g){
 
 /* ===================== RELATÓRIOS ===================== */
 let reportSubtab = 'resumo';
+let compMonthA = todayMonthKey();
+let compMonthB = addMonthsToKey(todayMonthKey(),-1);
 RENDERERS.relatorios = function(){
+  const showMonthNav = reportSubtab!=='comparativo';
   $('#view-relatorios').innerHTML = `
     <div class="view-head"><div><h1>Relatórios</h1><div class="view-sub">Pareto 80/20, ponto de equilíbrio e projeção de 12 meses</div></div>
-      <div class="month-nav"><button class="btn" id="rep-prev">${icon('chevronLeft',16)}</button><div class="month-label">${monthLabel(reportMonth)}</div><button class="btn" id="rep-next">${icon('chevronRight',16)}</button></div>
+      ${showMonthNav?`<div class="month-nav"><button class="btn" id="rep-prev">${icon('chevronLeft',16)}</button><div class="month-label">${monthLabel(reportMonth)}</div><button class="btn" id="rep-next">${icon('chevronRight',16)}</button></div>`:''}
     </div>
     <div class="subtabs">
       <button class="subtab" data-sub="resumo">Resumo</button>
+      <button class="subtab" data-sub="comparativo">Comparativo mensal</button>
       <button class="subtab" data-sub="graficos">Gráficos</button>
       <button class="subtab" data-sub="pareto">Pareto 80/20</button>
       <button class="subtab" data-sub="equilibrio">Ponto de equilíbrio</button>
@@ -1315,16 +1326,75 @@ RENDERERS.relatorios = function(){
     <div id="report-body"></div>
   `;
   $$('.subtab').forEach(b=>{ b.classList.toggle('active',b.dataset.sub===reportSubtab); b.onclick=()=>{reportSubtab=b.dataset.sub; RENDERERS.relatorios();}; });
-  $('#rep-prev').onclick=()=>{reportMonth=addMonthsToKey(reportMonth,-1);RENDERERS.relatorios();};
-  $('#rep-next').onclick=()=>{reportMonth=addMonthsToKey(reportMonth,1);RENDERERS.relatorios();};
+  if(showMonthNav){
+    $('#rep-prev').onclick=()=>{reportMonth=addMonthsToKey(reportMonth,-1);RENDERERS.relatorios();};
+    $('#rep-next').onclick=()=>{reportMonth=addMonthsToKey(reportMonth,1);RENDERERS.relatorios();};
+  }
   const body = $('#report-body');
   if(reportSubtab==='resumo') body.innerHTML = renderResumo();
+  else if(reportSubtab==='comparativo') { body.innerHTML = renderComparativo(); wireComparativo(); }
   else if(reportSubtab==='graficos') { body.innerHTML = renderGraficos(); wireGraficos(); }
   else if(reportSubtab==='pareto') body.innerHTML = renderPareto();
   else if(reportSubtab==='equilibrio') body.innerHTML = renderEquilibrio();
   else if(reportSubtab==='projecao') body.innerHTML = renderProjecao();
   else if(reportSubtab==='simulador') { body.innerHTML = renderSimulador(); wireSimulador(); }
 };
+function pctChange(cur,prev){
+  if(prev===0) return cur===0? 0 : 100;
+  return (cur-prev)/Math.abs(prev)*100;
+}
+function changeBadge(pct,goodDirection){
+  // goodDirection: 'up' significa que subir é bom (ex: receita); 'down' significa que subir é ruim (ex: despesa)
+  const rounded = Math.abs(pct)<0.05? 0 : pct;
+  const isUp = rounded>0;
+  const isGood = rounded===0? null : (goodDirection==='up'? isUp : !isUp);
+  const color = isGood===null? 'grey' : isGood? 'green' : 'rust';
+  const arrow = rounded===0? '' : isUp? '↑' : '↓';
+  return `<span class="badge ${color}">${arrow} ${Math.abs(rounded).toFixed(1)}%</span>`;
+}
+function renderComparativo(){
+  const cur = monthSummary(compMonthA);
+  const prev = monthSummary(compMonthB);
+  const pctReceitas = pctChange(cur.plannedReceitas, prev.plannedReceitas);
+  const pctDespesas = pctChange(cur.plannedDespesas, prev.plannedDespesas);
+  const saldoCur = cur.plannedReceitas-cur.plannedDespesas, saldoPrev = prev.plannedReceitas-prev.plannedDespesas;
+  const pctSaldo = pctChange(saldoCur, saldoPrev);
+
+  const cats = new Set([...Object.keys(cur.byCategory), ...Object.keys(prev.byCategory)]);
+  const catRows = Array.from(cats).map(cat=>{
+    const c = cur.byCategory[cat]||0, p = prev.byCategory[cat]||0;
+    return {cat, c, p, diff:c-p, pct:pctChange(c,p)};
+  }).sort((a,b)=>b.c-a.c);
+
+  return `
+    <div class="field-row" style="max-width:420px;margin-bottom:18px">
+      <div class="field"><label>Mês A</label><input type="month" id="comp-month-a" value="${compMonthA}"></div>
+      <div class="field"><label>Mês B</label><input type="month" id="comp-month-b" value="${compMonthB}"></div>
+    </div>
+    <div class="help-text" style="margin-top:-8px">Comparando ${monthLabel(compMonthA)} com ${monthLabel(compMonthB)}.</div>
+    <div class="grid grid-3">
+      <div class="card"><div class="stat-label">Receitas</div><div class="stat-value pos num">${fmtCurrency(cur.plannedReceitas)}</div><div class="stat-foot">${monthLabel(compMonthB)}: ${fmtCurrency(prev.plannedReceitas)}</div><div style="margin-top:8px">${changeBadge(pctReceitas,'up')}</div></div>
+      <div class="card"><div class="stat-label">Despesas</div><div class="stat-value neg num">${fmtCurrency(cur.plannedDespesas)}</div><div class="stat-foot">${monthLabel(compMonthB)}: ${fmtCurrency(prev.plannedDespesas)}</div><div style="margin-top:8px">${changeBadge(pctDespesas,'down')}</div></div>
+      <div class="card"><div class="stat-label">Saldo</div><div class="stat-value ${saldoCur>=0?'pos':'neg'} num">${fmtCurrency(saldoCur)}</div><div class="stat-foot">${monthLabel(compMonthB)}: ${fmtCurrency(saldoPrev)}</div><div style="margin-top:8px">${changeBadge(pctSaldo,'up')}</div></div>
+    </div>
+
+    <div class="section-title"><h2>Despesas por categoria</h2></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Categoria</th><th class="right">${monthLabelShort(compMonthA)}</th><th class="right">${monthLabelShort(compMonthB)}</th><th class="right">Diferença</th><th class="right">Variação</th></tr></thead>
+      <tbody>${catRows.length? catRows.map(r=>`<tr>
+        <td>${escapeHtml(r.cat)}</td>
+        <td class="right num">${fmtCurrency(r.c)}</td>
+        <td class="right num">${fmtCurrency(r.p)}</td>
+        <td class="right num" style="color:${r.diff>0?'var(--red)':r.diff<0?'var(--green)':'var(--ink-soft)'}">${r.diff>=0?'+':''}${fmtCurrency(r.diff)}</td>
+        <td class="right">${changeBadge(r.pct,'down')}</td>
+      </tr>`).join('') : emptyRow(5,'barchart','Sem dados para comparar','Cadastre despesas em pelo menos um dos dois meses.')}</tbody>
+    </table></div>
+  `;
+}
+function wireComparativo(){
+  $('#comp-month-a').onchange=(e)=>{ if(e.target.value){ compMonthA=e.target.value; RENDERERS.relatorios(); } };
+  $('#comp-month-b').onchange=(e)=>{ if(e.target.value){ compMonthB=e.target.value; RENDERERS.relatorios(); } };
+}
 function renderGraficos(){
   return `
     <div class="section-title" style="margin-top:0"><h2>Despesas por categoria — ${monthLabel(reportMonth)}</h2></div>

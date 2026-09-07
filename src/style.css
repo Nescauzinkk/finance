@@ -165,7 +165,7 @@ select{appearance:none;-webkit-appearance:none;background-image:url("data:image/
 .toolbar select,.toolbar input{padding:7px 10px;border:1px solid var(--line);border-radius:var(--r);background:var(--panel);color:var(--ink);font-size:12.5px;}
 .progress{height:6px;background:var(--panel-3);border-radius:2px;overflow:hidden;}
 .progress > div{height:100%;background:var(--purple);transition:width .5s ease;}
-.month-nav{display:flex;align-items:center;gap:10px;}
+.month-nav{display:flex;align-items:center;gap:10px;position:relative;}
 .month-nav .btn{padding:6px 10px;}
 .month-label{font-family:'Sora',sans-serif;font-size:16px;font-weight:600;min-width:160px;text-align:center;}
 .alert-item{display:flex;gap:10px;padding:10px 13px;border-radius:2px;background:var(--panel-2);border-left:2px solid var(--yellow);color:var(--yellow);font-size:13px;margin-bottom:6px;align-items:flex-start;}
