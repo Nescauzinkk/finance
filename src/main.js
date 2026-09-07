@@ -1378,7 +1378,13 @@ function renderComparativo(){
       <div class="card"><div class="stat-label">Saldo</div><div class="stat-value ${saldoCur>=0?'pos':'neg'} num">${fmtCurrency(saldoCur)}</div><div class="stat-foot">${monthLabel(compMonthB)}: ${fmtCurrency(saldoPrev)}</div><div style="margin-top:8px">${changeBadge(pctSaldo,'up')}</div></div>
     </div>
 
-    <div class="section-title"><h2>Despesas por categoria</h2></div>
+    <div class="section-title"><h2>Receitas, despesas e saldo</h2></div>
+    <div class="card"><div class="chart-box"><canvas id="chart-comp-overview"></canvas></div></div>
+
+    <div class="section-title"><h2>Despesas por categoria — comparação</h2></div>
+    <div class="card"><div class="chart-box" style="height:${Math.max(220,catRows.length*34)}px"><canvas id="chart-comp-categories"></canvas></div></div>
+
+    <div class="section-title"><h2>Tabela detalhada</h2></div>
     <div class="table-wrap"><table>
       <thead><tr><th>Categoria</th><th class="right">${monthLabelShort(compMonthA)}</th><th class="right">${monthLabelShort(compMonthB)}</th><th class="right">Diferença</th><th class="right">Variação</th></tr></thead>
       <tbody>${catRows.length? catRows.map(r=>`<tr>
@@ -1394,6 +1400,40 @@ function renderComparativo(){
 function wireComparativo(){
   $('#comp-month-a').onchange=(e)=>{ if(e.target.value){ compMonthA=e.target.value; RENDERERS.relatorios(); } };
   $('#comp-month-b').onchange=(e)=>{ if(e.target.value){ compMonthB=e.target.value; RENDERERS.relatorios(); } };
+
+  const curS = monthSummary(compMonthA), prevS = monthSummary(compMonthB);
+  const saldoA = curS.plannedReceitas-curS.plannedDespesas, saldoB = prevS.plannedReceitas-prevS.plannedDespesas;
+  const labelA = monthLabelShort(compMonthA), labelB = monthLabelShort(compMonthB);
+
+  renderChart('chart-comp-overview',{
+    type:'bar',
+    data:{ labels:['Receitas','Despesas','Saldo'], datasets:[
+      { label:labelA, data:[curS.plannedReceitas,curS.plannedDespesas,saldoA], backgroundColor:CHART_COLORS.green, borderRadius:5, maxBarThickness:46 },
+      { label:labelB, data:[prevS.plannedReceitas,prevS.plannedDespesas,saldoB], backgroundColor:'rgba(139,61,255,.75)', borderRadius:5, maxBarThickness:46 }
+    ]},
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ labels:{ usePointStyle:true, boxWidth:8 } }, tooltip:{ callbacks:{ label:(ctx)=>`${ctx.dataset.label}: ${fmtCurrency(ctx.raw)}` } } },
+      scales:{ x:{ grid:{ color:CHART_COLORS.line } }, y:{ grid:{ color:CHART_COLORS.line }, ticks:{ callback:(v)=>fmtCurrency(v) } } }
+    }
+  });
+
+  const cats = new Set([...Object.keys(curS.byCategory), ...Object.keys(prevS.byCategory)]);
+  const catRows = Array.from(cats).map(cat=>({cat, c:curS.byCategory[cat]||0, p:prevS.byCategory[cat]||0}))
+    .sort((a,b)=>(b.c+b.p)-(a.c+a.p));
+
+  renderChart('chart-comp-categories',{
+    type:'bar',
+    data:{ labels: catRows.map(r=>r.cat), datasets:[
+      { label:labelA, data:catRows.map(r=>Math.round(r.c*100)/100), backgroundColor:CHART_COLORS.green, borderRadius:4, maxBarThickness:18 },
+      { label:labelB, data:catRows.map(r=>Math.round(r.p*100)/100), backgroundColor:'rgba(139,61,255,.75)', borderRadius:4, maxBarThickness:18 }
+    ]},
+    options:{
+      responsive:true, maintainAspectRatio:false, indexAxis:'y',
+      plugins:{ legend:{ labels:{ usePointStyle:true, boxWidth:8 } }, tooltip:{ callbacks:{ label:(ctx)=>`${ctx.dataset.label}: ${fmtCurrency(ctx.raw)}` } } },
+      scales:{ x:{ grid:{ color:CHART_COLORS.line }, ticks:{ callback:(v)=>fmtCurrency(v) } }, y:{ grid:{ display:false } } }
+    }
+  });
 }
 function renderGraficos(){
   return `
