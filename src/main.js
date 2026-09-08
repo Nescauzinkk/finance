@@ -702,22 +702,6 @@ RENDERERS.dashboard = function(){
       <div class="card"><div class="icon-badge ${acc>=0?'green':'red'}">${icon('barchart',17)}</div><div class="stat-label">Saldo acumulado</div><div class="stat-value ${acc>=0?'pos':'neg'} num">${fmtCurrency(acc)}</div><div class="stat-foot">Desde ${monthLabel(firstDataMonth())}</div></div>
     </div>
 
-    <div class="section-title"><h2>Próximos vencimentos</h2>
-      <div class="toolbar" style="margin:0">
-        <button class="subtab ${upcomingWindow===7?'active':''}" data-window="7" style="margin-right:10px">7 dias</button>
-        <button class="subtab ${upcomingWindow===30?'active':''}" data-window="30">30 dias</button>
-      </div>
-    </div>
-    <div class="card" style="margin-bottom:1px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
-      <div>
-        <div class="stat-label">Saldo atual em conta</div>
-        <div class="stat-value num">${fmtCurrency(state.settings.currentBalance||0)}</div>
-        <div class="stat-foot">${state.settings.currentBalanceDate? 'Informado em '+fmtDate(state.settings.currentBalanceDate) : 'Ainda não informado — o saldo projetado abaixo parte de R$ 0,00'}</div>
-      </div>
-      <button class="btn small" id="btn-edit-balance">${icon('edit',13)} Atualizar saldo</button>
-    </div>
-    <div class="table-wrap">${renderUpcomingList(upcomingItems(upcomingWindow), state.settings.currentBalance||0)}</div>
-
     <div class="section-title"><h2>Evolução do saldo</h2></div>
     <div class="card"><div class="chart-box"><canvas id="chart-dashboard-balance"></canvas></div></div>
 
@@ -732,23 +716,6 @@ RENDERERS.dashboard = function(){
     <div>${computeAlerts().map(a=>`<div class="alert-item ${a.sev==='rust'?'rust':''}" style="${a.sev==='green'?'background:var(--green-bg);color:var(--green)':a.sev==='grey'?'background:var(--panel-2);color:var(--ink-soft)':''}">${icon(a.sev==='green'?'checkCircle':a.sev==='grey'?'info':'alertTriangle',16)}<span>${escapeHtml(a.msg)}</span></div>`).join('')}</div>
   `;
   $$('#view-dashboard [data-goto]').forEach(c=>c.onclick=()=>switchView(c.dataset.goto));
-  $$('#view-dashboard [data-window]').forEach(b=>b.onclick=()=>{ upcomingWindow=parseInt(b.dataset.window); RENDERERS.dashboard(); });
-  $$('#view-dashboard [data-mark-paid]').forEach(b=>b.onclick=()=>{
-    const tx = state.transactions.find(x=>x.id===b.dataset.markPaid);
-    if(tx){ tx.status='pago'; saveState(); renderAll(); }
-  });
-  $('#btn-edit-balance').onclick=()=>{
-    openFormModal({
-      title:'Atualizar saldo atual em conta',
-      initial:{currentBalance:state.settings.currentBalance||0},
-      fields:[{name:'currentBalance',label:'Quanto você tem em conta agora',type:'currency',required:true}],
-      onSubmit(v){
-        state.settings.currentBalance = v.currentBalance;
-        state.settings.currentBalanceDate = todayISO();
-        saveState(); renderAll();
-      }
-    });
-  };
   balanceEvolutionChart('chart-dashboard-balance',5,6);
 };
 function renderUpcomingList(items, startingBalance){
@@ -931,6 +898,23 @@ RENDERERS.planejamento = function(){
         <td><button class="icon-btn" data-edit-day="${t.id}" title="Editar">${icon('edit',15)}</button></td>
       </tr>`).join('') : emptyRow(6,'calendar','Nada nesse dia','Nenhum lançamento registrado para essa data.')}</tbody>
     </table></div>
+
+    <div class="section-title"><h2>Próximos vencimentos</h2>
+      <div class="toolbar" style="margin:0">
+        <button class="subtab ${upcomingWindow===7?'active':''}" data-window="7" style="margin-right:10px">7 dias</button>
+        <button class="subtab ${upcomingWindow===30?'active':''}" data-window="30">30 dias</button>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:1px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div>
+        <div class="stat-label">Saldo atual em conta</div>
+        <div class="stat-value num">${fmtCurrency(state.settings.currentBalance||0)}</div>
+        <div class="stat-foot">${state.settings.currentBalanceDate? 'Informado em '+fmtDate(state.settings.currentBalanceDate) : 'Ainda não informado — o saldo projetado abaixo parte de R$ 0,00'}</div>
+      </div>
+      <button class="btn small" id="btn-edit-balance">${icon('edit',13)} Corrigir saldo</button>
+    </div>
+    <div class="help-text" style="margin-top:8px">Ao marcar um lançamento como pago aqui embaixo, o saldo acima é ajustado automaticamente — você só precisa corrigi-lo manualmente se algo não bater (juros, taxa, arredondamento etc).</div>
+    <div class="table-wrap">${renderUpcomingList(upcomingItems(upcomingWindow), state.settings.currentBalance||0)}</div>
   `;
   $('#plan-prev').onclick=()=>{planDay=addDaysToISO(planDay,-1);RENDERERS.planejamento();};
   $('#plan-next').onclick=()=>{planDay=addDaysToISO(planDay,1);RENDERERS.planejamento();};
@@ -943,7 +927,31 @@ RENDERERS.planejamento = function(){
   if(todayBtn) todayBtn.onclick=()=>{planDay=todayISO();RENDERERS.planejamento();};
   $('#btn-new-lanc-day').onclick=()=>openLancModal(null, planDay);
   $$('[data-edit-day]').forEach(b=>b.onclick=()=>openLancModal(dayTxns.find(t=>t.id===b.dataset.editDay)));
+  $$('#view-planejamento [data-window]').forEach(b=>b.onclick=()=>{ upcomingWindow=parseInt(b.dataset.window); RENDERERS.planejamento(); });
+  $$('#view-planejamento [data-mark-paid]').forEach(b=>b.onclick=()=>markTransactionPaid(b.dataset.markPaid));
+  $('#btn-edit-balance').onclick=()=>{
+    openFormModal({
+      title:'Corrigir saldo atual em conta',
+      initial:{currentBalance:state.settings.currentBalance||0},
+      fields:[{name:'currentBalance',label:'Quanto você tem em conta agora',type:'currency',required:true}],
+      onSubmit(v){
+        state.settings.currentBalance = v.currentBalance;
+        state.settings.currentBalanceDate = todayISO();
+        saveState(); renderAll();
+      }
+    });
+  };
 };
+function markTransactionPaid(txId){
+  const tx = state.transactions.find(x=>x.id===txId);
+  if(!tx || tx.status==='pago') return;
+  tx.status = 'pago';
+  const delta = tx.type==='receita'? Number(tx.value) : -Number(tx.value);
+  state.settings.currentBalance = Number(state.settings.currentBalance||0) + delta;
+  state.settings.currentBalanceDate = todayISO();
+  saveState();
+  renderAll();
+}
 
 /* ===================== CARTÃO ===================== */
 RENDERERS.cartao = function(){
@@ -1013,7 +1021,6 @@ RENDERERS.parcelamentos = function(){
   `;
   function instCard(inst){
     const paid = installmentsPaidCount('installment',inst.id);
-    const cur = Math.min(paid+ (inst.startMonth<=todayMonthKey()?1:0), inst.count);
     const pct = Math.min(paid/inst.count*100,100);
     const done = paid>=inst.count;
     return `<div class="card">
@@ -1052,17 +1059,19 @@ function openInstallmentModal(inst){
       const count = Math.max(1,parseInt(v.count));
       const installmentValue = Math.round(v.totalValue/count*100)/100;
       if(isEdit){
-        if(inst.count!==count || inst.startMonth!==v.startMonth || inst.totalValue!==v.totalValue){
+        const scheduleChanged = inst.count!==count || inst.startMonth!==v.startMonth || inst.totalValue!==v.totalValue;
+        const applyUpdate = ()=>{
+          state.transactions = state.transactions.filter(t=>!(t.source==='installment'&&t.sourceId===inst.id&&t.status!=='pago'));
+          Object.assign(inst,v,{count,installmentValue});
+          materializeAll(); renderAll();
+        };
+        if(scheduleChanged){
           choiceModal('Alterar parcelamento','Parcelas já pagas não serão alteradas. O que deseja fazer com as parcelas futuras?',[
-            {label:'Aplicar às futuras', action(){
-              state.transactions = state.transactions.filter(t=>!(t.source==='installment'&&t.sourceId===inst.id&&t.status!=='pago'));
-              Object.assign(inst,v,{count,installmentValue});
-              materializeAll(); renderAll();
-            }}
+            {label:'Aplicar às futuras', action:applyUpdate}
           ]);
           return;
         }
-        Object.assign(inst,v,{count,installmentValue}); saveState(); renderAll();
+        applyUpdate();
       } else {
         state.installments.push({id:uid(),...v,count,installmentValue,status:'ativo'});
         materializeAll(); renderAll();
@@ -1340,11 +1349,12 @@ RENDERERS.relatorios = function(){
   else if(reportSubtab==='simulador') { body.innerHTML = renderSimulador(); wireSimulador(); }
 };
 function pctChange(cur,prev){
-  if(prev===0) return cur===0? 0 : 100;
+  if(prev===0) return cur===0? 0 : null; // null = "sem base de comparação" (categoria nova)
   return (cur-prev)/Math.abs(prev)*100;
 }
 function changeBadge(pct,goodDirection){
   // goodDirection: 'up' significa que subir é bom (ex: receita); 'down' significa que subir é ruim (ex: despesa)
+  if(pct===null) return `<span class="badge grey">Novo</span>`;
   const rounded = Math.abs(pct)<0.05? 0 : pct;
   const isUp = rounded>0;
   const isGood = rounded===0? null : (goodDirection==='up'? isUp : !isUp);
@@ -1420,7 +1430,7 @@ function wireComparativo(){
 
   const cats = new Set([...Object.keys(curS.byCategory), ...Object.keys(prevS.byCategory)]);
   const catRows = Array.from(cats).map(cat=>({cat, c:curS.byCategory[cat]||0, p:prevS.byCategory[cat]||0}))
-    .sort((a,b)=>(b.c+b.p)-(a.c+a.p));
+    .sort((a,b)=>b.c-a.c);
 
   renderChart('chart-comp-categories',{
     type:'bar',
@@ -1488,7 +1498,7 @@ function renderProjecao(){
   const notes = endingCommitmentsInRange(todayMonthKey(),12);
   return `<div class="table-wrap"><table><thead><tr><th>Mês</th><th class="right">Receitas</th><th class="right">Despesas</th><th class="right">Saldo</th><th class="right">Acumulado</th></tr></thead>
     <tbody>${proj.map(p=>`<tr><td>${p.label}</td><td class="right num">${fmtCurrency(p.receitas)}</td><td class="right num">${fmtCurrency(p.despesas)}</td><td class="right num">${fmtCurrency(p.saldo)}</td><td class="right num">${fmtCurrency(p.saldoAcumulado)}</td></tr>`).join('')}</tbody></table></div>
-    ${notes.length? `<div class="section-title"><h2>Mudanças previstas</h2></div>${notes.map(n=>`<div class="alert-item" style="background:var(--green-bg);color:var(--green)"><span class="dot"></span><span>${escapeHtml(n)}</span></div>`).join('')}` : ''}`;
+    ${notes.length? `<div class="section-title"><h2>Mudanças previstas</h2></div>${notes.map(n=>`<div class="alert-item" style="background:var(--green-bg);color:var(--green)">${icon('checkCircle',16)}<span>${escapeHtml(n)}</span></div>`).join('')}` : ''}`;
 }
 function renderSimulador(){
   return `<div class="card" style="max-width:520px">
