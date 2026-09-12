@@ -144,7 +144,7 @@ function categoryBarChart(canvasId, monthKey){
 }
 
 function injectNavIcons(){
-  $$('.nav-item[data-icon], #btn-quick-add[data-icon]').forEach(btn=>{
+  $$('.nav-item[data-icon]').forEach(btn=>{
     if(btn.querySelector('svg')) return;
     btn.insertAdjacentHTML('afterbegin', icon(btn.dataset.icon,17));
   });
@@ -165,10 +165,9 @@ function defaultCategories(){
 }
 function defaultState(){
   return {
-    version:2,
+    version:1,
     settings:{ nome:'', moeda:'BRL', primeiroDiaMes:1, salarioPadrao:0, metaEconomiaMensal:0, currentBalance:0, currentBalanceDate:null },
     categories: defaultCategories(),
-    accounts: [],
     cards: [],
     incomes: [],
     recurring: [],
@@ -254,23 +253,10 @@ async function loadState(){
   else if(data && data.data){ state = data.data; }
   else { state = defaultState(); }
   if(!state.categories || !state.categories.length) state.categories = defaultCategories();
-  ['accounts','cards','incomes','recurring','installments','debts','goals','transactions'].forEach(k=>{ if(!state[k]) state[k]=[]; });
+  ['cards','incomes','recurring','installments','debts','goals','transactions'].forEach(k=>{ if(!state[k]) state[k]=[]; });
   if(!state.settings) state.settings = defaultState().settings;
   state.settings = {...defaultState().settings, ...state.settings};
-  migrateToAccounts();
   rebuildIndex();
-}
-function migrateToAccounts(){
-  // V1: quem só usava "saldo atual em conta" (um número solto) ganha uma conta de verdade,
-  // sem perder o valor que já tinha informado.
-  if(state.accounts.length>0) return;
-  const initial = Number(state.settings.currentBalance)||0;
-  state.accounts.push({
-    id: uid(), name:'Conta Principal', institution:'', type:'conta', initialBalance: initial,
-    color:'green', status:'ativa', createdAt: Date.now()
-  });
-  // lançamentos antigos (sem conta) continuam funcionando; o saldo por conta é calculado
-  // a partir de agora sobre os que tiverem accountId. O valor migrado preserva o total que você já via.
 }
 function rebuildIndex(){
   state._txnIndex = new Set(state.transactions.map(t=>t.genKey).filter(Boolean));
@@ -291,10 +277,6 @@ function saveState(immediate){
 
 
 /* ===================== MATERIALIZATION ===================== */
-function defaultAccountId(){
-  const acc = state.accounts.find(a=>a.status==='ativa');
-  return acc? acc.id : null;
-}
 function ensureTxn(def){
   const occ = def.occMonth || def.month;
   const key = def.source+':'+def.sourceId+':'+occ+(def.installmentIndex!=null?':'+def.installmentIndex:'');
@@ -302,8 +284,7 @@ function ensureTxn(def){
   const t = {
     id:uid(), genKey:key, type:def.type, category:def.category, description:def.description,
     value:def.value, date:def.date, month:def.month, paymentMethod:def.paymentMethod||'Outro',
-    cardId:def.cardId||null, accountId: def.accountId || defaultAccountId(),
-    status: def.status || (def.month < todayMonthKey() ? 'pago':'pendente'),
+    cardId:def.cardId||null, status: def.status || (def.month < todayMonthKey() ? 'pago':'pendente'),
     note:'', source:def.source, sourceId:def.sourceId, installmentIndex:def.installmentIndex ?? null,
     createdAt:Date.now()
   };
@@ -385,7 +366,6 @@ function monthSummary(monthKey){
   let plannedReceitas=0, realizedReceitas=0, plannedDespesas=0, realizedDespesas=0;
   const byCategory={};
   txns.forEach(t=>{
-    if(t.type==='transferencia') return; // transferência entre contas não é receita nem despesa
     const v = Number(t.value)||0;
     if(t.type==='receita'){ plannedReceitas+=v; if(t.status==='pago') realizedReceitas+=v; }
     else { plannedDespesas+=v; if(t.status==='pago') realizedDespesas+=v;
@@ -660,7 +640,6 @@ function categoryOptions(type){
   return state.categories.filter(c=>c.status==='ativa' && (c.type===type)).map(c=>({value:c.name,label:c.name}));
 }
 function cardOptions(){ return [{value:'',label:'Nenhum'}].concat(state.cards.map(c=>({value:c.id,label:c.name}))); }
-function accountOptions(){ return state.accounts.map(a=>({value:a.id,label:a.name})); }
 
 /* ===================== DASHBOARD ===================== */
 let upcomingWindow = 7;
@@ -680,7 +659,7 @@ RENDERERS.dashboard = function(){
   },0);
   const comprometido = totalDividas+totalParcelasFuturas;
   const mesesComprometido = s.plannedReceitas>0? (comprometido/s.plannedReceitas):0;
-  const ativos = totalAvailable() + guardado;
+  const ativos = Number(state.settings.currentBalance||0) + guardado;
   const passivos = comprometido;
   const patrimonioLiquido = ativos - passivos;
   const canSpend = canSpendNow(cur);
@@ -759,7 +738,7 @@ function renderUpcomingList(items, startingBalance){
 }
 
 /* ===================== LANÇAMENTOS ===================== */
-let lancFilter = {mes:'todos',tipo:'todos',categoria:'todos',status:'todos',busca:''};
+let lancFilter = {mes:'todos',tipo:'todos',categoria:'todos',status:'todos'};
 RENDERERS.lancamentos = function(){
   const monthsSet = Array.from(new Set(state.transactions.map(t=>t.month))).sort().reverse();
   let list = state.transactions.slice().sort((a,b)=> b.date.localeCompare(a.date));
@@ -767,15 +746,13 @@ RENDERERS.lancamentos = function(){
   if(lancFilter.tipo!=='todos') list = list.filter(t=>t.type===lancFilter.tipo);
   if(lancFilter.categoria!=='todos') list = list.filter(t=>t.category===lancFilter.categoria);
   if(lancFilter.status!=='todos') list = list.filter(t=>t.status===lancFilter.status);
-  if(lancFilter.busca.trim()) { const q=lancFilter.busca.trim().toLowerCase(); list = list.filter(t=>(t.description||'').toLowerCase().includes(q) || (t.category||'').toLowerCase().includes(q)); }
 
   $('#view-lancamentos').innerHTML = `
     <div class="view-head"><div><h1>Lançamentos</h1><div class="view-sub">Todas as receitas e despesas cadastradas</div></div>
       <button class="btn primary" id="btn-new-lanc">${icon('plus',15)} Novo lançamento</button></div>
     <div class="toolbar">
-      <input type="text" id="f-busca" placeholder="Buscar por descrição ou categoria..." value="${escapeHtml(lancFilter.busca)}" style="min-width:220px">
       <select id="f-mes"><option value="todos">Todos os meses</option>${monthsSet.map(m=>`<option value="${m}" ${lancFilter.mes===m?'selected':''}>${monthLabel(m)}</option>`).join('')}</select>
-      <select id="f-tipo"><option value="todos">Todos os tipos</option><option value="receita" ${lancFilter.tipo==='receita'?'selected':''}>Receita</option><option value="despesa" ${lancFilter.tipo==='despesa'?'selected':''}>Despesa</option><option value="transferencia" ${lancFilter.tipo==='transferencia'?'selected':''}>Transferência</option></select>
+      <select id="f-tipo"><option value="todos">Todos os tipos</option><option value="receita" ${lancFilter.tipo==='receita'?'selected':''}>Receita</option><option value="despesa" ${lancFilter.tipo==='despesa'?'selected':''}>Despesa</option></select>
       <select id="f-cat"><option value="todos">Todas as categorias</option>${state.categories.map(c=>`<option value="${escapeHtml(c.name)}" ${lancFilter.categoria===c.name?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select>
       <select id="f-status"><option value="todos">Todos os status</option><option value="pago" ${lancFilter.status==='pago'?'selected':''}>Pago</option><option value="pendente" ${lancFilter.status==='pendente'?'selected':''}>Pendente</option></select>
     </div>
@@ -790,15 +767,13 @@ RENDERERS.lancamentos = function(){
       <td>${fmtDate(t.date)}${shifted?`<div class="help-text" style="margin:2px 0 0">competência: ${monthLabelShort(t.month)}</div>`:''}</td>
       <td>${escapeHtml(t.description)}${t.source!=='manual'?`<span class="badge grey" style="margin-left:6px">${sourceLabel(t.source)}</span>`:''}</td>
       <td>${escapeHtml(t.category||'—')}</td>
-      <td>${typeBadge(t.type)}</td>
+      <td>${t.type==='receita'?'<span class="badge green">Receita</span>':'<span class="badge rust">Despesa</span>'}</td>
       <td class="right num">${fmtCurrency(t.value)}</td>
       <td>${escapeHtml(t.paymentMethod||'—')}</td>
       <td>${t.status==='pago'?'<span class="badge green">Pago</span>':'<span class="badge gold">Pendente</span>'}</td>
       <td><button class="icon-btn" data-edit="${t.id}" title="Editar">${icon('edit',15)}</button><button class="icon-btn" data-dup="${t.id}" title="Duplicar">${icon('copy',15)}</button><button class="icon-btn" data-del="${t.id}" title="Excluir">${icon('trash',15)}</button></td>
     </tr>`;
   }
-  let searchDebounce;
-  $('#f-busca').oninput=e=>{ clearTimeout(searchDebounce); const val=e.target.value; searchDebounce=setTimeout(()=>{ lancFilter.busca=val; RENDERERS.lancamentos(); const inp=$('#f-busca'); if(inp){ inp.focus(); inp.setSelectionRange(val.length,val.length); } },300); };
   $('#f-mes').onchange=e=>{lancFilter.mes=e.target.value;RENDERERS.lancamentos();};
   $('#f-tipo').onchange=e=>{lancFilter.tipo=e.target.value;RENDERERS.lancamentos();};
   $('#f-cat').onchange=e=>{lancFilter.categoria=e.target.value;RENDERERS.lancamentos();};
@@ -817,20 +792,18 @@ RENDERERS.lancamentos = function(){
   });
 };
 function sourceLabel(s){ return {recurring:'Recorrente',installment:'Parcela',debt:'Dívida',income:'Receita fixa'}[s]||''; }
-function openLancModal(t, presetDate, presetType){
+function openLancModal(t, presetDate){
   const isEdit = !!t;
   const d = presetDate || todayISO();
   openFormModal({
     title: isEdit?'Editar lançamento':'Novo lançamento',
-    initial: t || {date:d,month:monthKeyOf(d),type:presetType||'despesa',status:'pendente',paymentMethod:'PIX',accountId:defaultAccountId()},
+    initial: t || {date:d,month:monthKeyOf(d),type:'despesa',status:'pendente',paymentMethod:'PIX'},
     fields:[
-      {row:[{name:'type',label:'Tipo',type:'select',options:[{value:'despesa',label:'Despesa'},{value:'receita',label:'Receita'},{value:'transferencia',label:'Transferência'}]},
+      {row:[{name:'type',label:'Tipo',type:'select',options:[{value:'despesa',label:'Despesa'},{value:'receita',label:'Receita'}]},
              {name:'status',label:'Status',type:'select',options:[{value:'pendente',label:'Pendente'},{value:'pago',label:'Pago'}]}]},
       {name:'description',label:'Descrição',type:'text',required:true},
       {row:[{name:'category',label:'Categoria',type:'select',options:state.categories.map(c=>({value:c.name,label:c.name}))},
              {name:'value',label:'Valor',type:'currency',required:true}]},
-      {row:[{name:'accountId',label:'Conta',type:'select',options:accountOptions()},
-             {name:'toAccountId',label:'Conta destino (transferência)',type:'select',options:accountOptions()}]},
       {row:[{name:'date',label:'Data',type:'date',required:true},
              {name:'paymentMethod',label:'Forma de pagamento',type:'select',options:['Dinheiro','PIX','Débito','Crédito','Transferência','Outro'].map(v=>({value:v,label:v}))}]},
       {name:'cardId',label:'Cartão (se for compra no crédito)',type:'select',options:cardOptions()},
@@ -838,24 +811,12 @@ function openLancModal(t, presetDate, presetType){
       {name:'note',label:'Observação',type:'textarea'}
     ],
     onSubmit(v){
-      if(v.type==='transferencia'){ v.category='Transferência'; }
       if(isEdit){ Object.assign(t,v); }
       else { state.transactions.push({id:uid(),source:'manual',sourceId:null,createdAt:Date.now(),...v}); }
       saveState(); renderAll();
     },
     onDelete: isEdit? ()=>{ confirmModal('Excluir lançamento?','Essa ação não pode ser desfeita.',()=>{ state.transactions=state.transactions.filter(x=>x.id!==t.id); saveState(); closeModal(); renderAll(); }); } : null
   });
-  const typeSelect = document.querySelector('#modal-form [name="type"]');
-  const toggleTransferFields = ()=>{
-    const isTransfer = typeSelect.value==='transferencia';
-    const catField = document.querySelector('#modal-form [name="category"]')?.closest('.field');
-    const toAccField = document.querySelector('#modal-form [name="toAccountId"]')?.closest('.field');
-    const cardField = document.querySelector('#modal-form [name="cardId"]')?.closest('.field');
-    if(catField) catField.style.display = isTransfer? 'none':'';
-    if(toAccField) toAccField.style.display = isTransfer? '':'none';
-    if(cardField) cardField.style.display = isTransfer? 'none':'';
-  };
-  if(typeSelect){ toggleTransferFields(); typeSelect.addEventListener('change', toggleTransferFields); }
   if(!isEdit){
     const dateInput = document.querySelector('#modal-form [name="date"]');
     const monthInput = document.querySelector('#modal-form [name="month"]');
@@ -875,34 +836,23 @@ function dayLabel(iso){
   const d = new Date(iso+'T00:00:00');
   return `${WEEKDAY_NAMES[d.getDay()]}, ${d.getDate()} de ${MONTH_NAMES[d.getMonth()].toLowerCase()} de ${d.getFullYear()}`;
 }
-function accountBalance(accountId){
-  const acc = state.accounts.find(a=>a.id===accountId);
-  if(!acc) return 0;
-  let bal = Number(acc.initialBalance)||0;
-  state.transactions.forEach(t=>{
-    if(t.status!=='pago') return;
-    if(t.type==='receita' && t.accountId===accountId) bal += Number(t.value);
-    else if(t.type==='despesa' && t.accountId===accountId) bal -= Number(t.value);
-    else if(t.type==='transferencia'){
-      if(t.accountId===accountId) bal -= Number(t.value);
-      if(t.toAccountId===accountId) bal += Number(t.value);
-    }
-  });
-  return bal;
-}
-function totalAvailable(){
-  return state.accounts.filter(a=>a.status==='ativa').reduce((s,a)=>s+accountBalance(a.id),0);
-}
 function balanceAsOfDate(iso){
-  const todayIso = todayISO();
-  const baseInitial = state.accounts.filter(a=>a.status==='ativa').reduce((s,a)=>s+(Number(a.initialBalance)||0),0);
-  let total = baseInitial;
+  const anchorDate = state.settings.currentBalanceDate;
+  const anchorBalance = Number(state.settings.currentBalance)||0;
+  if(anchorDate && iso > anchorDate){
+    // projeta pra frente: saldo atual + tudo que ainda está pendente até essa data
+    let total = anchorBalance;
+    state.transactions.forEach(t=>{
+      if(t.status==='pendente' && t.date && t.date<=iso){
+        total += t.type==='receita'? Number(t.value) : -Number(t.value);
+      }
+    });
+    return total;
+  }
+  // dia atual ou no passado: soma o que realmente foi pago/recebido até essa data
+  let total = 0;
   state.transactions.forEach(t=>{
-    if(!t.date || t.date>iso || t.type==='transferencia') return; // transferência não muda o total geral, só move entre contas
-    if(t.status==='pago'){
-      total += t.type==='receita'? Number(t.value) : -Number(t.value);
-    } else if(t.status==='pendente' && iso>todayIso){
-      // projeção: só entra na conta o que ainda está pendente quando a data-alvo é no futuro
+    if(t.status==='pago' && t.date && t.date<=iso){
       total += t.type==='receita'? Number(t.value) : -Number(t.value);
     }
   });
@@ -932,7 +882,7 @@ RENDERERS.planejamento = function(){
       <div class="card"><div class="stat-label">Receitas do dia</div><div class="stat-value pos num">${fmtCurrency(receitasDia)}</div></div>
       <div class="card"><div class="stat-label">Despesas do dia</div><div class="stat-value neg num">${fmtCurrency(despesasDia)}</div></div>
       <div class="card"><div class="stat-label">Saldo do dia</div><div class="stat-value ${receitasDia-despesasDia>=0?'pos':'neg'} num">${fmtCurrency(receitasDia-despesasDia)}</div></div>
-      <div class="card"><div class="stat-label">Saldo ${isPast?'real':'projetado'} até esse dia</div><div class="stat-value ${saldo>=0?'pos':'neg'} num">${fmtCurrency(saldo)}</div><div class="stat-foot">${state.accounts.length? '' : 'Cadastre uma conta para projeções precisas'}</div></div>
+      <div class="card"><div class="stat-label">Saldo ${isPast?'real':'projetado'} até esse dia</div><div class="stat-value ${saldo>=0?'pos':'neg'} num">${fmtCurrency(saldo)}</div><div class="stat-foot">${state.settings.currentBalanceDate? '' : 'Informe seu saldo atual no Dashboard para projeções futuras precisas'}</div></div>
     </div>
 
     <div class="section-title"><h2>Lançamentos de ${fmtDate(planDay)}</h2>
@@ -943,7 +893,7 @@ RENDERERS.planejamento = function(){
       <tbody>${dayTxns.length? dayTxns.map(t=>`<tr>
         <td>${escapeHtml(t.description)}${t.source!=='manual'?`<span class="badge grey" style="margin-left:6px">${sourceLabel(t.source)}</span>`:''}</td>
         <td>${escapeHtml(t.category||'—')}</td>
-        <td>${typeBadge(t.type)}</td>
+        <td>${t.type==='receita'?'<span class="badge green">Receita</span>':'<span class="badge rust">Despesa</span>'}</td>
         <td class="right num">${fmtCurrency(t.value)}</td>
         <td>${t.status==='pago'?'<span class="badge green">Pago</span>':'<span class="badge gold">Pendente</span>'}</td>
         <td><button class="icon-btn" data-edit-day="${t.id}" title="Editar">${icon('edit',15)}</button></td>
@@ -956,15 +906,16 @@ RENDERERS.planejamento = function(){
         <button class="subtab ${upcomingWindow===30?'active':''}" data-window="30">30 dias</button>
       </div>
     </div>
-    <div class="card clickable" data-goto="contas" style="margin-bottom:1px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+    <div class="card" style="margin-bottom:1px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
       <div>
-        <div class="stat-label">Saldo total em contas</div>
-        <div class="stat-value num">${fmtCurrency(totalAvailable())}</div>
-        <div class="stat-foot">${state.accounts.length} conta(s) · marcar um lançamento como pago ajusta o saldo automaticamente</div>
+        <div class="stat-label">Saldo atual em conta</div>
+        <div class="stat-value num">${fmtCurrency(state.settings.currentBalance||0)}</div>
+        <div class="stat-foot">${state.settings.currentBalanceDate? 'Informado em '+fmtDate(state.settings.currentBalanceDate) : 'Ainda não informado — o saldo projetado abaixo parte de R$ 0,00'}</div>
       </div>
-      <span class="btn small">${icon('creditcard',13)} Ver contas</span>
+      <button class="btn small" id="btn-edit-balance">${icon('edit',13)} Corrigir saldo</button>
     </div>
-    <div class="table-wrap">${renderUpcomingList(upcomingItems(upcomingWindow), totalAvailable())}</div>
+    <div class="help-text" style="margin-top:8px">Ao marcar um lançamento como pago aqui embaixo, o saldo acima é ajustado automaticamente — você só precisa corrigi-lo manualmente se algo não bater (juros, taxa, arredondamento etc).</div>
+    <div class="table-wrap">${renderUpcomingList(upcomingItems(upcomingWindow), state.settings.currentBalance||0)}</div>
   `;
   $('#plan-prev').onclick=()=>{planDay=addDaysToISO(planDay,-1);RENDERERS.planejamento();};
   $('#plan-next').onclick=()=>{planDay=addDaysToISO(planDay,1);RENDERERS.planejamento();};
@@ -979,75 +930,31 @@ RENDERERS.planejamento = function(){
   $$('[data-edit-day]').forEach(b=>b.onclick=()=>openLancModal(dayTxns.find(t=>t.id===b.dataset.editDay)));
   $$('#view-planejamento [data-window]').forEach(b=>b.onclick=()=>{ upcomingWindow=parseInt(b.dataset.window); RENDERERS.planejamento(); });
   $$('#view-planejamento [data-mark-paid]').forEach(b=>b.onclick=()=>markTransactionPaid(b.dataset.markPaid));
-  $$('#view-planejamento [data-goto]').forEach(c=>c.onclick=()=>switchView(c.dataset.goto));
+  $('#btn-edit-balance').onclick=()=>{
+    openFormModal({
+      title:'Corrigir saldo atual em conta',
+      initial:{currentBalance:state.settings.currentBalance||0},
+      fields:[{name:'currentBalance',label:'Quanto você tem em conta agora',type:'currency',required:true}],
+      onSubmit(v){
+        state.settings.currentBalance = v.currentBalance;
+        state.settings.currentBalanceDate = todayISO();
+        saveState(); renderAll();
+      }
+    });
+  };
 };
-function typeBadge(type){
-  if(type==='receita') return '<span class="badge green">Receita</span>';
-  if(type==='transferencia') return '<span class="badge gold">Transferência</span>';
-  return '<span class="badge rust">Despesa</span>';
-}
 function markTransactionPaid(txId){
   const tx = state.transactions.find(x=>x.id===txId);
   if(!tx || tx.status==='pago') return;
   tx.status = 'pago';
-  if(!tx.accountId) tx.accountId = defaultAccountId(); // garante que o saldo da conta reflita esse pagamento
+  const delta = tx.type==='receita'? Number(tx.value) : -Number(tx.value);
+  state.settings.currentBalance = Number(state.settings.currentBalance||0) + delta;
+  state.settings.currentBalanceDate = todayISO();
   saveState();
   renderAll();
 }
 
 /* ===================== CARTÃO ===================== */
-/* ===================== CONTAS ===================== */
-RENDERERS.contas = function(){
-  const total = totalAvailable();
-  $('#view-contas').innerHTML = `
-    <div class="view-head"><div><h1>Contas</h1><div class="view-sub">Contas bancárias, carteira, poupança e outras — o saldo é calculado automaticamente</div></div>
-      <button class="btn primary" id="btn-new-account">${icon('plus',15)} Nova conta</button></div>
-    <div class="card" style="margin-bottom:18px"><div class="stat-label">Total disponível</div><div class="stat-value ${total>=0?'pos':'neg'} num" style="font-size:28px">${fmtCurrency(total)}</div><div class="stat-foot">Soma de todas as contas ativas</div></div>
-    <div class="grid grid-3">${state.accounts.length? state.accounts.map(accountCard).join(''):emptyState('creditcard','Nenhuma conta cadastrada','Crie sua primeira conta para começar a acompanhar o saldo automaticamente.')}</div>
-  `;
-  function accountCard(a){
-    const bal = accountBalance(a.id);
-    return `<div class="card">
-      <div class="stat-label">${escapeHtml(a.name)} ${a.status==='inativa'?'<span class="badge grey">Inativa</span>':''}</div>
-      <div class="stat-value ${bal>=0?'pos':'neg'} num">${fmtCurrency(bal)}</div>
-      <div class="stat-foot">${escapeHtml(a.institution||typeLabel(a.type))} · saldo inicial ${fmtCurrency(a.initialBalance)}</div>
-      <div style="margin-top:10px"><button class="icon-btn" data-edit-acc="${a.id}">${icon('edit',14)} Editar</button> <button class="icon-btn" data-del-acc="${a.id}">${icon('trash',14)} Excluir</button></div>
-    </div>`;
-  }
-  $('#btn-new-account').onclick=()=>openAccountModal();
-  $$('[data-edit-acc]').forEach(b=>b.onclick=()=>openAccountModal(state.accounts.find(a=>a.id===b.dataset.editAcc)));
-  $$('[data-del-acc]').forEach(b=>b.onclick=()=>{
-    const id=b.dataset.delAcc;
-    const inUse = state.transactions.some(t=>t.accountId===id||t.toAccountId===id);
-    confirmModal('Excluir conta?', inUse? 'Existem lançamentos vinculados a essa conta — eles continuarão salvos, mas ficarão sem conta associada.':'Tem certeza?', ()=>{
-      state.accounts = state.accounts.filter(a=>a.id!==id);
-      saveState(); renderAll();
-    });
-  });
-};
-function typeLabel(type){
-  return {conta:'Conta bancária',carteira:'Carteira',poupanca:'Poupança',digital:'Conta digital',conjunta:'Conta conjunta',outro:'Outros'}[type]||'Conta';
-}
-function openAccountModal(a){
-  const isEdit = !!a;
-  openFormModal({
-    title: isEdit? 'Editar conta':'Nova conta',
-    initial: a || {type:'conta',status:'ativa',initialBalance:0},
-    fields:[
-      {name:'name',label:'Nome',type:'text',required:true},
-      {row:[{name:'institution',label:'Instituição (opcional)',type:'text'},
-             {name:'type',label:'Tipo',type:'select',options:[{value:'conta',label:'Conta bancária'},{value:'carteira',label:'Carteira'},{value:'poupanca',label:'Poupança'},{value:'digital',label:'Conta digital'},{value:'conjunta',label:'Conta conjunta'},{value:'outro',label:'Outros'}]}]},
-      {row:[{name:'initialBalance',label:'Saldo inicial',type:'currency',required:true},
-             {name:'status',label:'Status',type:'select',options:[{value:'ativa',label:'Ativa'},{value:'inativa',label:'Inativa'}]}]}
-    ],
-    onSubmit(v){
-      if(isEdit){ Object.assign(a,v); } else { state.accounts.push({id:uid(),...v,createdAt:Date.now()}); }
-      saveState(); renderAll();
-    },
-    onDelete: isEdit? ()=>{ confirmModal('Excluir conta?','Tem certeza?',()=>{ state.accounts=state.accounts.filter(x=>x.id!==a.id); saveState(); closeModal(); renderAll(); }); } : null
-  });
-}
-
 RENDERERS.cartao = function(){
   $('#view-cartao').innerHTML = `
     <div class="view-head"><div><h1>Cartão de crédito</h1><div class="view-sub">Gerencie seus cartões e compras parceladas</div></div>
@@ -1247,6 +1154,26 @@ function openDebtModal(d){
 }
 
 /* ===================== RECEITAS ===================== */
+/* ===================== RECEITAS ===================== */
+RENDERERS.receitas = function(){
+  $('#view-receitas').innerHTML = `
+    <div class="view-head"><div><h1>Receitas</h1><div class="view-sub">Salário, pensão, freelances e outras entradas</div></div>
+      <button class="btn primary" id="btn-new-income">${icon('plus',15)} Nova receita</button></div>
+    <div class="table-wrap"><table><thead><tr><th>Nome</th><th>Tipo</th><th class="right">Valor</th><th>Recorrência</th><th>Status</th><th></th></tr></thead>
+    <tbody>${state.incomes.length? state.incomes.map(rowIncome).join(''):emptyRow(6,'trendingUp','Nenhuma receita cadastrada','Cadastre salário, pensão, freelances e outras entradas.')}</tbody></table></div>
+  `;
+  function rowIncome(inc){
+    return `<tr><td>${escapeHtml(inc.name)}</td><td>${escapeHtml(inc.type)}</td><td class="right num">${fmtCurrency(inc.value)}</td>
+      <td>${inc.frequency==='mensal'?'Mensal, dia '+inc.day:'Única em '+fmtDate(inc.startDate)}</td>
+      <td>${inc.status==='ativa'?'<span class="badge green">Ativa</span>':'<span class="badge grey">Inativa</span>'}</td>
+      <td><button class="icon-btn" data-edit-inc="${inc.id}">${icon('edit',15)}</button><button class="icon-btn" data-del-inc="${inc.id}">${icon('trash',15)}</button></td></tr>`;
+  }
+  $('#btn-new-income').onclick=()=>openIncomeModal();
+  $$('[data-edit-inc]').forEach(b=>b.onclick=()=>openIncomeModal(state.incomes.find(i=>i.id===b.dataset.editInc)));
+  $$('[data-del-inc]').forEach(b=>b.onclick=()=>confirmModal('Excluir receita?','Os lançamentos já gerados continuarão no histórico.',()=>{
+    state.incomes=state.incomes.filter(i=>i.id!==b.dataset.delInc); saveState(); RENDERERS.receitas();
+  }));
+};
 function openIncomeModal(inc){
   const isEdit=!!inc;
   openFormModal({
@@ -1285,55 +1212,29 @@ function openIncomeModal(inc){
   });
 }
 
-/* ===================== RECORRENTES (receitas + despesas) ===================== */
-let recorrentesTab = 'despesas';
+/* ===================== RECORRENTES ===================== */
 RENDERERS.recorrentes = function(){
   const subsAtivas = state.recurring.filter(r=>r.isSubscription&&r.status==='ativa');
   const subsTotal = subsAtivas.reduce((a,r)=>a+Number(r.value),0);
   $('#view-recorrentes').innerHTML = `
-    <div class="view-head"><div><h1>Recorrentes</h1><div class="view-sub">Receitas e despesas que se repetem todo mês</div></div>
-      <button class="btn primary" id="btn-new-rec-item">${icon('plus',15)} ${recorrentesTab==='despesas'?'Nova despesa recorrente':'Nova receita'}</button></div>
-    <div class="subtabs">
-      <button class="subtab" data-rtab="despesas">Despesas recorrentes</button>
-      <button class="subtab" data-rtab="receitas">Receitas</button>
-    </div>
-    ${recorrentesTab==='despesas'?renderRecDespesas(subsAtivas,subsTotal):renderRecReceitas()}
+    <div class="view-head"><div><h1>Despesas recorrentes</h1><div class="view-sub">Gasolina, assinaturas, ajuda em casa e outras despesas fixas</div></div>
+      <button class="btn primary" id="btn-new-rec">${icon('plus',15)} Nova recorrente</button></div>
+    ${subsAtivas.length?`<div class="card" style="margin-bottom:18px"><div class="stat-label">Assinaturas ativas</div><div class="stat-value num">${fmtCurrency(subsTotal)}/mês</div><div class="stat-foot">${fmtCurrency(subsTotal*12)}/ano em ${subsAtivas.length} assinatura(s)</div></div>`:''}
+    <div class="table-wrap"><table><thead><tr><th>Nome</th><th>Categoria</th><th class="right">Valor</th><th>Dia</th><th>Assinatura</th><th>Status</th><th></th></tr></thead>
+    <tbody>${state.recurring.length? state.recurring.map(rowRec).join(''):emptyRow(7,'repeat','Nenhuma despesa recorrente','Cadastre gasolina, assinaturas e outras despesas fixas.')}</tbody></table></div>
   `;
-  $$('.subtab[data-rtab]').forEach(b=>{ b.classList.toggle('active',b.dataset.rtab===recorrentesTab); b.onclick=()=>{recorrentesTab=b.dataset.rtab; RENDERERS.recorrentes();}; });
-  $('#btn-new-rec-item').onclick=()=> recorrentesTab==='despesas'? openRecModal() : openIncomeModal();
-  if(recorrentesTab==='despesas'){
-    $$('[data-edit-rec]').forEach(b=>b.onclick=()=>openRecModal(state.recurring.find(r=>r.id===b.dataset.editRec)));
-    $$('[data-del-rec]').forEach(b=>b.onclick=()=>confirmModal('Excluir recorrente?','Os lançamentos já gerados continuarão no histórico.',()=>{
-      state.recurring=state.recurring.filter(r=>r.id!==b.dataset.delRec); saveState(); RENDERERS.recorrentes();
-    }));
-  } else {
-    $$('[data-edit-inc]').forEach(b=>b.onclick=()=>openIncomeModal(state.incomes.find(i=>i.id===b.dataset.editInc)));
-    $$('[data-del-inc]').forEach(b=>b.onclick=()=>confirmModal('Excluir receita?','Os lançamentos já gerados continuarão no histórico.',()=>{
-      state.incomes=state.incomes.filter(i=>i.id!==b.dataset.delInc); saveState(); RENDERERS.recorrentes();
-    }));
-  }
-};
-function renderRecDespesas(subsAtivas,subsTotal){
   function rowRec(r){
     return `<tr><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.category||'—')}</td><td class="right num">${fmtCurrency(r.value)}</td><td>${r.day||'—'}</td>
       <td>${r.isSubscription?'<span class="badge gold">Sim</span>':'—'}</td>
       <td>${r.status==='ativa'?'<span class="badge green">Ativa</span>':'<span class="badge grey">Inativa</span>'}</td>
       <td><button class="icon-btn" data-edit-rec="${r.id}">${icon('edit',15)}</button><button class="icon-btn" data-del-rec="${r.id}">${icon('trash',15)}</button></td></tr>`;
   }
-  return `${subsAtivas.length?`<div class="card" style="margin-bottom:18px"><div class="stat-label">Assinaturas ativas</div><div class="stat-value num">${fmtCurrency(subsTotal)}/mês</div><div class="stat-foot">${fmtCurrency(subsTotal*12)}/ano em ${subsAtivas.length} assinatura(s)</div></div>`:''}
-    <div class="table-wrap"><table><thead><tr><th>Nome</th><th>Categoria</th><th class="right">Valor</th><th>Dia</th><th>Assinatura</th><th>Status</th><th></th></tr></thead>
-    <tbody>${state.recurring.length? state.recurring.map(rowRec).join(''):emptyRow(7,'repeat','Nenhuma despesa recorrente','Cadastre gasolina, assinaturas e outras despesas fixas.')}</tbody></table></div>`;
-}
-function renderRecReceitas(){
-  function rowIncome(inc){
-    return `<tr><td>${escapeHtml(inc.name)}</td><td>${escapeHtml(inc.type)}</td><td class="right num">${fmtCurrency(inc.value)}</td>
-      <td>${inc.frequency==='mensal'?'Mensal, dia '+inc.day:'Única em '+fmtDate(inc.startDate)}</td>
-      <td>${inc.status==='ativa'?'<span class="badge green">Ativa</span>':'<span class="badge grey">Inativa</span>'}</td>
-      <td><button class="icon-btn" data-edit-inc="${inc.id}">${icon('edit',15)}</button><button class="icon-btn" data-del-inc="${inc.id}">${icon('trash',15)}</button></td></tr>`;
-  }
-  return `<div class="table-wrap"><table><thead><tr><th>Nome</th><th>Tipo</th><th class="right">Valor</th><th>Recorrência</th><th>Status</th><th></th></tr></thead>
-    <tbody>${state.incomes.length? state.incomes.map(rowIncome).join(''):emptyRow(6,'trendingUp','Nenhuma receita cadastrada','Cadastre salário, pensão, freelances e outras entradas.')}</tbody></table></div>`;
-}
+  $('#btn-new-rec').onclick=()=>openRecModal();
+  $$('[data-edit-rec]').forEach(b=>b.onclick=()=>openRecModal(state.recurring.find(r=>r.id===b.dataset.editRec)));
+  $$('[data-del-rec]').forEach(b=>b.onclick=()=>confirmModal('Excluir recorrente?','Os lançamentos já gerados continuarão no histórico.',()=>{
+    state.recurring=state.recurring.filter(r=>r.id!==b.dataset.delRec); saveState(); RENDERERS.recorrentes();
+  }));
+};
 function openRecModal(r){
   const isEdit=!!r;
   openFormModal({
@@ -1639,7 +1540,9 @@ RENDERERS.configuracoes = function(){
             <div class="field"><label>Meta de economia mensal</label><div class="currency-input"><span class="prefix">R$</span><input type="text" inputmode="decimal" class="currency-mask" name="metaEconomiaMensal" value="${formatCurrencyDigits(st.metaEconomiaMensal||0)}"></div></div>
           </div>
           <div class="field"><label>Primeiro dia do mês</label><input type="number" min="1" max="28" name="primeiroDiaMes" value="${st.primeiroDiaMes||1}"></div>
-          <div class="help-text">Saldo agora é calculado automaticamente por conta — gerencie em <strong>Contas</strong>, no menu.</div>
+          <div class="field"><label>Saldo atual em conta</label><div class="currency-input"><span class="prefix">R$</span><input type="text" inputmode="decimal" class="currency-mask" name="currentBalance" value="${formatCurrencyDigits(st.currentBalance||0)}"></div>
+            <div class="help-text" style="margin-top:6px">${st.currentBalanceDate? 'Última atualização: '+fmtDate(st.currentBalanceDate) : 'Nunca informado'}</div>
+          </div>
           <button class="btn primary" type="submit">Salvar preferências</button>
         </form>
       </div>
@@ -1655,12 +1558,8 @@ RENDERERS.configuracoes = function(){
     </div>
     <div class="section-title"><h2>Backup dos dados</h2></div>
     <div class="card">
-      <p style="font-size:13.5px;color:var(--ink-soft);margin-top:0">Exporte seus dados a qualquer momento como backup em JSON, ou restaure a partir de um backup anterior.</p>
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn" id="btn-export">${icon('barchart',14)} Exportar dados (JSON)</button>
-        <button class="btn" id="btn-import">${icon('edit',14)} Importar backup</button>
-        <input type="file" id="input-import" accept="application/json" style="display:none">
-      </div>
+      <p style="font-size:13.5px;color:var(--ink-soft);margin-top:0">Exporte seus dados a qualquer momento como backup em JSON.</p>
+      <button class="btn" id="btn-export">Exportar dados (JSON)</button>
     </div>
   `;
   wireCurrencyMasks(document.getElementById('settings-form'));
@@ -1671,6 +1570,9 @@ RENDERERS.configuracoes = function(){
     state.settings.salarioPadrao = parseCurrencyValue(fd.get('salarioPadrao'));
     state.settings.metaEconomiaMensal = parseCurrencyValue(fd.get('metaEconomiaMensal'));
     state.settings.primeiroDiaMes = parseInt(fd.get('primeiroDiaMes'))||1;
+    const newBalance = parseCurrencyValue(fd.get('currentBalance'));
+    if(newBalance !== state.settings.currentBalance){ state.settings.currentBalanceDate = todayISO(); }
+    state.settings.currentBalance = newBalance;
     saveState(true);
     renderAll();
   };
@@ -1685,26 +1587,6 @@ RENDERERS.configuracoes = function(){
     a.href = URL.createObjectURL(blob);
     a.download = 'controle-financeiro-backup.json';
     a.click();
-  };
-  $('#btn-import').onclick=()=>$('#input-import').click();
-  $('#input-import').onchange=(e)=>{
-    const file = e.target.files[0];
-    if(!file) return;
-    const reader = new FileReader();
-    reader.onload = ()=>{
-      let parsed;
-      try{ parsed = JSON.parse(reader.result); }
-      catch(err){ confirmModal('Arquivo inválido','Esse arquivo não parece ser um backup válido do Kivo.',()=>{},'Ok'); return; }
-      confirmModal('Restaurar backup?','Isso substitui TODOS os seus dados atuais pelos dados desse arquivo. Essa ação não pode ser desfeita.',()=>{
-        delete parsed._txnIndex;
-        state = {...defaultState(), ...parsed};
-        rebuildIndex();
-        materializeAll();
-        renderAll();
-      },'Restaurar');
-    };
-    reader.readAsText(file);
-    e.target.value = '';
   };
 };
 function openCategoryModal(c){
@@ -1758,35 +1640,10 @@ async function bootApp(){
   $$('.nav-item[data-view]').forEach(b=>b.onclick=()=>switchView(b.dataset.view));
   const logoutBtn = document.getElementById('btn-logout');
   if(logoutBtn) logoutBtn.onclick = ()=>supabase.auth.signOut();
-  wireQuickAdd();
   document.getElementById('app-root').style.display='flex';
   switchView('dashboard');
   const loader = document.getElementById('app-loader');
   if(loader) loader.classList.add('hidden');
-}
-function wireQuickAdd(){
-  const btn = document.getElementById('btn-quick-add');
-  if(!btn) return;
-  btn.onclick = (e)=>{
-    e.stopPropagation();
-    const existing = document.querySelector('.quick-add-menu');
-    if(existing){ existing.remove(); return; }
-    const items = [
-      {label:'Receita', ic:'trendingUp', action:()=>openLancModal(null, todayISO(), 'receita')},
-      {label:'Despesa', ic:'trendingDown', action:()=>openLancModal(null, todayISO(), 'despesa')},
-      {label:'Transferência', ic:'repeat', action:()=>openLancModal(null, todayISO(), 'transferencia')},
-      {label:'Compra no cartão', ic:'creditcard', action:()=>{ switchView('cartao'); }},
-      {label:'Meta', ic:'target', action:()=>{ switchView('metas'); setTimeout(()=>document.getElementById('btn-new-goal')?.click(),50); }},
-      {label:'Conta', ic:'wallet', action:()=>{ switchView('contas'); setTimeout(()=>document.getElementById('btn-new-account')?.click(),50); }}
-    ];
-    const menu = document.createElement('div');
-    menu.className = 'quick-add-menu';
-    menu.innerHTML = items.map((it,i)=>`<button data-i="${i}">${icon(it.ic,15)}${escapeHtml(it.label)}</button>`).join('');
-    btn.parentElement.appendChild(menu);
-    menu.querySelectorAll('button').forEach(b=>b.onclick=(ev)=>{ ev.stopPropagation(); items[+b.dataset.i].action(); menu.remove(); });
-    const closeOnOutside = (ev)=>{ if(!menu.contains(ev.target)){ menu.remove(); document.removeEventListener('click',closeOnOutside); } };
-    setTimeout(()=>document.addEventListener('click',closeOnOutside),0);
-  };
 }
 init();
 
