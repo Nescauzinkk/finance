@@ -838,7 +838,7 @@ function openLancModal(t, presetDate, presetType){
       {name:'note',label:'Observação',type:'textarea'}
     ],
     onSubmit(v){
-      if(v.type==='transferencia'){ v.category='Transferência'; } else { v.toAccountId=''; }
+      if(v.type==='transferencia'){ v.category='Transferência'; }
       if(isEdit){ Object.assign(t,v); }
       else { state.transactions.push({id:uid(),source:'manual',sourceId:null,createdAt:Date.now(),...v}); }
       saveState(); renderAll();
@@ -875,21 +875,12 @@ function dayLabel(iso){
   const d = new Date(iso+'T00:00:00');
   return `${WEEKDAY_NAMES[d.getDay()]}, ${d.getDate()} de ${MONTH_NAMES[d.getMonth()].toLowerCase()} de ${d.getFullYear()}`;
 }
-function txCountsForBalance(t){
-  if(!t.date) return false;
-  const acc = state.accounts.find(a=>a.id===t.accountId);
-  if(acc && acc.createdAt){
-    const sinceDate = new Date(acc.createdAt).toISOString().slice(0,10);
-    if(t.date < sinceDate) return false; // já estava embutido no saldo inicial da conta quando ela foi criada
-  }
-  return true;
-}
 function accountBalance(accountId){
   const acc = state.accounts.find(a=>a.id===accountId);
   if(!acc) return 0;
   let bal = Number(acc.initialBalance)||0;
   state.transactions.forEach(t=>{
-    if(t.status!=='pago' || !txCountsForBalance(t)) return;
+    if(t.status!=='pago') return;
     if(t.type==='receita' && t.accountId===accountId) bal += Number(t.value);
     else if(t.type==='despesa' && t.accountId===accountId) bal -= Number(t.value);
     else if(t.type==='transferencia'){
@@ -918,7 +909,7 @@ function balanceAsOfDate(iso){
     // volta no tempo a partir de hoje: desfaz o efeito de tudo que já foi pago entre essa data e hoje
     let total = total0;
     state.transactions.forEach(t=>{
-      if(t.type==='transferencia' || t.status!=='pago' || !t.date || !txCountsForBalance(t)) return;
+      if(t.type==='transferencia' || t.status!=='pago' || !t.date) return;
       if(t.date>iso && t.date<=todayIso){
         total -= t.type==='receita'? Number(t.value) : -Number(t.value);
       }
