@@ -419,10 +419,18 @@ function breakeven(monthKey){
   if(margem<0 || pct>95) status='vermelho'; else if(pct>75) status='amarelo';
   return { receitaPrevista:s.plannedReceitas, despesaPrevista:s.plannedDespesas, margem, pct, status };
 }
-function canSpendNow(monthKey){
-  const s = monthSummary(monthKey);
+function canSpendNow(days){
+  const today = todayISO();
+  const limit = addDaysToISO(today, days);
+  let total = Number(state.settings.currentBalance)||0;
+  state.transactions.forEach(t=>{
+    if(t.status!=='pendente' || !t.date) return;
+    if(t.date>=today && t.date<=limit){
+      total += t.type==='receita'? Number(t.value) : -Number(t.value);
+    }
+  });
   const goalsReserve = state.goals.filter(g=>!goalDone(g)).reduce((a,g)=>a+(Number(g.monthlyPlanned)||0),0);
-  return s.plannedReceitas - s.plannedDespesas - goalsReserve;
+  return total - goalsReserve;
 }
 function goalDone(g){ return Number(g.currentValue)>=Number(g.targetValue); }
 function categoryEssential(name){ const c=state.categories.find(c=>c.name===name); return c? c.essential : false; }
@@ -664,6 +672,7 @@ function accountOptions(){ return state.accounts.map(a=>({value:a.id,label:a.nam
 
 /* ===================== DASHBOARD ===================== */
 let upcomingWindow = 7;
+let spendWindow = 30;
 RENDERERS.dashboard = function(){
   const cur = todayMonthKey();
   const s = monthSummary(cur);
@@ -683,7 +692,7 @@ RENDERERS.dashboard = function(){
   const ativos = totalAvailable() + guardado;
   const passivos = comprometido;
   const patrimonioLiquido = ativos - passivos;
-  const canSpend = canSpendNow(cur);
+  const canSpend = canSpendNow(spendWindow);
   const beColor = be.status==='verde'?'green':be.status==='amarelo'?'gold':'rust';
   const beText = be.status==='verde'?'Positivo — margem confortável':be.status==='amarelo'?'Atenção — margem baixa':'Déficit projetado';
 
@@ -727,17 +736,25 @@ RENDERERS.dashboard = function(){
     <div class="section-title"><h2>Evolução do saldo</h2></div>
     <div class="card"><div class="chart-box"><canvas id="chart-dashboard-balance"></canvas></div></div>
 
-    <div class="section-title"><h2>Quanto posso gastar?</h2></div>
+    <div class="section-title"><h2>Quanto posso gastar?</h2>
+      <div class="toolbar" style="margin:0">
+        <button class="subtab ${spendWindow===7?'active':''}" data-spend-window="7" style="margin-right:8px">7 dias</button>
+        <button class="subtab ${spendWindow===15?'active':''}" data-spend-window="15" style="margin-right:8px">15 dias</button>
+        <button class="subtab ${spendWindow===30?'active':''}" data-spend-window="30" style="margin-right:8px">30 dias</button>
+        <button class="subtab ${spendWindow===60?'active':''}" data-spend-window="60">60 dias</button>
+      </div>
+    </div>
     <div class="card">
-      <div class="icon-badge green">${icon('sparkles',17)}</div>
-      <div class="stat-value pos num" style="font-size:32px">${fmtCurrency(Math.max(canSpend,0))}</div>
-      <div class="stat-foot">Considerando despesas restantes, parcelas, dívidas e reservas planejadas para ${monthLabel(cur)}.</div>
+      <div class="icon-badge ${canSpend>=0?'green':'red'}">${icon('sparkles',17)}</div>
+      <div class="stat-value ${canSpend>=0?'pos':'neg'} num" style="font-size:32px">${fmtCurrency(canSpend)}</div>
+      <div class="stat-foot">Saldo atual (${fmtCurrency(state.settings.currentBalance||0)}) já descontando tudo que ainda está pendente para pagar ou receber nos próximos ${spendWindow} dias, e reservas de metas planejadas.</div>
     </div>
 
     <div class="section-title"><h2>Alertas financeiros</h2></div>
     <div>${computeAlerts().map(a=>`<div class="alert-item ${a.sev==='rust'?'rust':''}" style="${a.sev==='green'?'background:var(--green-bg);color:var(--green)':a.sev==='grey'?'background:var(--panel-2);color:var(--ink-soft)':''}">${icon(a.sev==='green'?'checkCircle':a.sev==='grey'?'info':'alertTriangle',16)}<span>${escapeHtml(a.msg)}</span></div>`).join('')}</div>
   `;
   $$('#view-dashboard [data-goto]').forEach(c=>c.onclick=()=>switchView(c.dataset.goto));
+  $$('#view-dashboard [data-spend-window]').forEach(b=>b.onclick=()=>{ spendWindow=parseInt(b.dataset.spendWindow); RENDERERS.dashboard(); });
   balanceEvolutionChart('chart-dashboard-balance',5,6);
 };
 function renderUpcomingList(items, startingBalance){
@@ -1319,7 +1336,7 @@ RENDERERS.recorrentes = function(){
   const subsTotal = subsAtivas.reduce((a,r)=>a+Number(r.value),0);
   $('#view-recorrentes').innerHTML = `
     <div class="view-head"><div><h1>Recorrentes</h1><div class="view-sub">Receitas e despesas que se repetem todo mês</div></div>
-      <button class="btn primary" id="btn-new-rec-item">${icon('plus',15)} ${recorrentesTab==='despesas'?'Nova despesa recorrente':'Nova receita'}</button></div>
+      <button class="btn primary" id="btn-new-rec-item">${icon('plus',15)} Nova recorrente</button></div>
     <div class="subtabs">
       <button class="subtab" data-rtab="despesas">Despesas recorrentes</button>
       <button class="subtab" data-rtab="receitas">Receitas</button>
@@ -1327,7 +1344,12 @@ RENDERERS.recorrentes = function(){
     ${recorrentesTab==='despesas'?renderRecDespesas(subsAtivas,subsTotal):renderRecReceitas()}
   `;
   $$('.subtab[data-rtab]').forEach(b=>{ b.classList.toggle('active',b.dataset.rtab===recorrentesTab); b.onclick=()=>{recorrentesTab=b.dataset.rtab; RENDERERS.recorrentes();}; });
-  $('#btn-new-rec-item').onclick=()=> recorrentesTab==='despesas'? openRecModal() : openIncomeModal();
+  $('#btn-new-rec-item').onclick=()=>{
+    choiceModal('Nova recorrente','Isso é uma despesa ou uma receita?',[
+      {label:'Despesa', action:()=>openRecModal()},
+      {label:'Receita', action:()=>openIncomeModal()}
+    ]);
+  };
   if(recorrentesTab==='despesas'){
     $$('[data-edit-rec]').forEach(b=>b.onclick=()=>openRecModal(state.recurring.find(r=>r.id===b.dataset.editRec)));
     $$('[data-del-rec]').forEach(b=>b.onclick=()=>confirmModal('Excluir recorrente?','Os lançamentos já gerados continuarão no histórico.',()=>{
