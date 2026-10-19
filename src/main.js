@@ -88,7 +88,7 @@ function emptyRow(colspan,iconName,title,subtitle){
 /* ===================== CHARTS ===================== */
 const CHART_COLORS = {
   green:'#39E27A', red:'#FF4D4D', yellow:'#FFD23F',
-  ink:'#F2F3F0', inkSoft:'#8B9089', line:'#2A2C2E', panel:'#151617'
+  ink:'#F2F3F0', inkSoft:'#A79FC0', line:'rgba(176,102,255,.16)', panel:'#151617'
 };
 const chartInstances = {};
 Chart.defaults.color = CHART_COLORS.inkSoft;
@@ -1246,7 +1246,7 @@ RENDERERS.parcelamentos = function(){
     renderChart('chart-invoice-compare',{
       type:'bar',
       data:{ labels: data.map(d=>monthLabelShort(d.month)), datasets:[
-        { label:'Total da fatura', data: data.map(d=>Math.round(d.total*100)/100), backgroundColor:'rgba(139,61,255,.75)', borderRadius:5, maxBarThickness:40 }
+        { label:'Total da fatura', data: data.map(d=>Math.round(d.total*100)/100), backgroundColor:'rgba(162,75,255,.75)', borderRadius:5, maxBarThickness:40 }
       ]},
       options:{
         responsive:true, maintainAspectRatio:false,
@@ -1629,7 +1629,7 @@ function wireComparativo(){
     type:'bar',
     data:{ labels:['Receitas','Despesas','Saldo'], datasets:[
       { label:labelA, data:[curS.plannedReceitas,curS.plannedDespesas,saldoA], backgroundColor:CHART_COLORS.green, borderRadius:5, maxBarThickness:46 },
-      { label:labelB, data:[prevS.plannedReceitas,prevS.plannedDespesas,saldoB], backgroundColor:'rgba(139,61,255,.75)', borderRadius:5, maxBarThickness:46 }
+      { label:labelB, data:[prevS.plannedReceitas,prevS.plannedDespesas,saldoB], backgroundColor:'rgba(162,75,255,.75)', borderRadius:5, maxBarThickness:46 }
     ]},
     options:{
       responsive:true, maintainAspectRatio:false,
@@ -1646,7 +1646,7 @@ function wireComparativo(){
     type:'bar',
     data:{ labels: catRows.map(r=>r.cat), datasets:[
       { label:labelA, data:catRows.map(r=>Math.round(r.c*100)/100), backgroundColor:CHART_COLORS.green, borderRadius:4, maxBarThickness:18 },
-      { label:labelB, data:catRows.map(r=>Math.round(r.p*100)/100), backgroundColor:'rgba(139,61,255,.75)', borderRadius:4, maxBarThickness:18 }
+      { label:labelB, data:catRows.map(r=>Math.round(r.p*100)/100), backgroundColor:'rgba(162,75,255,.75)', borderRadius:4, maxBarThickness:18 }
     ]},
     options:{
       responsive:true, maintainAspectRatio:false, indexAxis:'y',
