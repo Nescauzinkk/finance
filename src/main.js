@@ -573,7 +573,7 @@ function choiceModal(title,message,choices){
     </div>
   </div>`;
   $('#m-cancel').onclick = closeModal;
-  $$('.modal-actions [data-i]').forEach(btn=>btn.onclick=()=>{ choices[+btn.dataset.i].action(); closeModal(); });
+  $$('.modal-actions [data-i]').forEach(btn=>btn.onclick=()=>{ const action = choices[+btn.dataset.i].action; closeModal(); action(); });
   $('.modal-backdrop').onclick=(e)=>{ if(e.target.dataset.close) closeModal(); };
 }
 
@@ -1407,7 +1407,7 @@ RENDERERS.recorrentes = function(){
   const subsTotal = subsAtivas.reduce((a,r)=>a+Number(r.value),0);
   $('#view-recorrentes').innerHTML = `
     <div class="view-head"><div><h1>Recorrentes</h1><div class="view-sub">Receitas e despesas que se repetem todo mês</div></div>
-      <button class="btn primary" id="btn-new-rec-item">${icon('plus',15)} Nova recorrente</button></div>
+      <button class="btn primary" id="btn-new-rec-item">${icon('plus',15)} ${recorrentesTab==='despesas'?'Nova despesa recorrente':'Nova receita'}</button></div>
     <div class="subtabs">
       <button class="subtab" data-rtab="despesas">Despesas recorrentes</button>
       <button class="subtab" data-rtab="receitas">Receitas</button>
@@ -1415,12 +1415,7 @@ RENDERERS.recorrentes = function(){
     ${recorrentesTab==='despesas'?renderRecDespesas(subsAtivas,subsTotal):renderRecReceitas()}
   `;
   $$('.subtab[data-rtab]').forEach(b=>{ b.classList.toggle('active',b.dataset.rtab===recorrentesTab); b.onclick=()=>{recorrentesTab=b.dataset.rtab; RENDERERS.recorrentes();}; });
-  $('#btn-new-rec-item').onclick=()=>{
-    choiceModal('Nova recorrente','Isso é uma despesa ou uma receita?',[
-      {label:'Despesa', action:()=>openRecModal()},
-      {label:'Receita', action:()=>openIncomeModal()}
-    ]);
-  };
+  $('#btn-new-rec-item').onclick=()=> recorrentesTab==='despesas'? openRecModal() : openIncomeModal();
   if(recorrentesTab==='despesas'){
     $$('[data-edit-rec]').forEach(b=>b.onclick=()=>openRecModal(state.recurring.find(r=>r.id===b.dataset.editRec)));
     $$('[data-del-rec]').forEach(b=>b.onclick=()=>confirmModal('Excluir recorrente?','Os lançamentos já gerados continuarão no histórico.',()=>{
