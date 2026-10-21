@@ -324,9 +324,10 @@ function ensureTxn(def){
   state._txnIndex.add(key);
   return true;
 }
+const MATERIALIZE_AHEAD = 24; // meses à frente que receitas/despesas recorrentes já viram lançamentos reais
 function materializeRecurringAndIncome(){
   const cur = todayMonthKey();
-  const horizon = addMonthsToKey(cur,1); // materializa também o mês seguinte, pra alimentar a linha do tempo de vencimentos
+  const horizon = addMonthsToKey(cur,MATERIALIZE_AHEAD);
   state.incomes.forEach(inc=>{
     if(inc.status!=='ativa') return;
     if(inc.frequency==='unica'){
@@ -335,7 +336,7 @@ function materializeRecurringAndIncome(){
     }
     let m = monthKeyOf(inc.startDate);
     while(m<=horizon && (!inc.endDate || m<=monthKeyOf(inc.endDate))){
-      ensureTxn({type:'receita',source:'income',sourceId:inc.id,occMonth:m,month:m,category:inc.category||inc.name,description:inc.name,value:inc.value,date:m+'-'+pad(inc.day||1)});
+      ensureTxn({type:'receita',source:'income',sourceId:inc.id,occMonth:m,month:m,category:inc.category||inc.name,description:inc.name,value:inc.value,date:m+'-'+pad(Math.min(parseInt(inc.day,10)||1, daysInMonth(m)))});
       m = addMonthsToKey(m,1);
     }
   });
@@ -343,7 +344,7 @@ function materializeRecurringAndIncome(){
     if(r.status!=='ativa') return;
     let m = monthKeyOf(r.startDate);
     while(m<=horizon){
-      ensureTxn({type:'despesa',source:'recurring',sourceId:r.id,occMonth:m,month:m,category:r.category,description:r.name,value:r.value,paymentMethod:r.paymentMethod,date:m+'-'+pad(r.day||1)});
+      ensureTxn({type:'despesa',source:'recurring',sourceId:r.id,occMonth:m,month:m,category:r.category,description:r.name,value:r.value,paymentMethod:r.paymentMethod,date:m+'-'+pad(Math.min(parseInt(r.day,10)||1, daysInMonth(m)))});
       m = addMonthsToKey(m,1);
     }
   });
@@ -360,7 +361,7 @@ function materializeInstallmentsDebts(){
   state.debts.forEach(d=>{
     for(let i=0;i<d.count;i++){
       const m = addMonthsToKey(d.startMonth,i);
-      ensureTxn({type:'despesa',source:'debt',sourceId:d.id,month:m,installmentIndex:i,category:'Dívidas',description:`${d.name} (${i+1}/${d.count})`,value:d.installmentValue,paymentMethod:'Outro',date:m+'-'+pad(d.dueDay||10)});
+      ensureTxn({type:'despesa',source:'debt',sourceId:d.id,month:m,installmentIndex:i,category:'Dívidas',description:`${d.name} (${i+1}/${d.count})`,value:d.installmentValue,paymentMethod:'Outro',date:m+'-'+pad(Math.min(parseInt(d.dueDay,10)||10, daysInMonth(m)))});
     }
   });
 }
@@ -368,7 +369,7 @@ function materializeAll(){ rebuildIndex(); materializeRecurringAndIncome(); mate
 
 function virtualEntriesForMonth(monthKey){
   const out=[];
-  const horizon = addMonthsToKey(todayMonthKey(),1);
+  const horizon = addMonthsToKey(todayMonthKey(),MATERIALIZE_AHEAD);
   state.incomes.forEach(inc=>{
     if(inc.status!=='ativa'||inc.frequency!=='mensal') return;
     const offset = 0;
@@ -390,7 +391,7 @@ function virtualEntriesForMonth(monthKey){
 }
 function getMonthTransactions(monthKey){
   let txns = state.transactions.filter(t=>t.month===monthKey);
-  if(monthKey > addMonthsToKey(todayMonthKey(),1)) txns = txns.concat(virtualEntriesForMonth(monthKey));
+  if(monthKey > addMonthsToKey(todayMonthKey(),MATERIALIZE_AHEAD)) txns = txns.concat(virtualEntriesForMonth(monthKey));
   return txns;
 }
 
@@ -658,8 +659,8 @@ function openFormModal({title,fields,initial={},onSubmit,submitLabel,onDelete}){
       else if(f.type==='currency') values[f.name] = parseCurrencyValue(fd.get(f.name));
       else values[f.name] = fd.get(f.name);
     });
-    onSubmit(values);
     closeModal();
+    onSubmit(values);
   };
 }
 
