@@ -32,9 +32,17 @@ function monthDiff(a,b){ // months from a to b
 }
 function daysInMonth(key){ const [y,m]=key.split('-').map(Number); return new Date(y,m,0).getDate(); }
 function invoiceDueDate(card, invoiceMonth){
-  // usa o dia de vencimento real do cartão pra essa fatura, em vez de um dia fixo genérico
-  const day = card && card.dueDay? Math.min(parseInt(card.dueDay,10)||10, daysInMonth(invoiceMonth)) : 10;
-  return invoiceMonth+'-'+pad(day);
+  // fatura que fecha no mês X vence no dia de vencimento do próprio mês X (se vence depois do fechamento)
+  // ou do mês seguinte (se o dia de vencimento é menor/igual ao de fechamento — caso mais comum)
+  const due = card && card.dueDay? (parseInt(card.dueDay,10)||10) : 10;
+  const closing = card && card.closingDay? (parseInt(card.closingDay,10)||0) : 0;
+  const dueMonth = (closing && due<=closing)? addMonthsToKey(invoiceMonth,1) : invoiceMonth;
+  return dueMonth+'-'+pad(Math.min(due, daysInMonth(dueMonth)));
+}
+function cardInvoiceFor(card, purchaseDateISO){
+  // a qual fatura (mês de fechamento) uma compra pertence e quando essa fatura vence
+  const invoiceMonth = firstInvoiceMonth(card, purchaseDateISO);
+  return {invoiceMonth, dueDate: invoiceDueDate(card, invoiceMonth)};
 }
 function firstInvoiceMonth(card, purchaseDateISO){
   // se a compra foi feita depois do fechamento do cartão, ela entra na fatura do mês seguinte
@@ -324,10 +332,22 @@ function ensureTxn(def){
   state._txnIndex.add(key);
   return true;
 }
-const MATERIALIZE_AHEAD = 24; // meses à frente que receitas/despesas recorrentes já viram lançamentos reais
+const MATERIALIZE_AHEAD = 3; // meses à frente que as recorrentes já viram lançamentos reais; além disso só aparecem como "previsto" no Orçamento
+function limitMonth(){ return addMonthsToKey(todayMonthKey(), MATERIALIZE_AHEAD); }
+function recurringGenerated(r, occ){
+  const card = r.cardId? state.cards.find(c=>c.id===r.cardId) : null;
+  const base = occ+'-'+pad(Math.min(parseInt(r.day,10)||1, daysInMonth(occ)));
+  let date = base, month = occ;
+  if(card){ const inv = cardInvoiceFor(card, base); date = inv.dueDate; month = inv.invoiceMonth; } // compra no crédito cai na fatura certa
+  return {type:'despesa',source:'recurring',sourceId:r.id,occMonth:occ,month,date,category:r.category,description:r.name,value:r.value,
+          paymentMethod: card? 'Crédito' : r.paymentMethod, cardId: card? card.id : null};
+}
+function incomeGenerated(inc, occ){
+  const date = occ+'-'+pad(Math.min(parseInt(inc.day,10)||1, daysInMonth(occ)));
+  return {type:'receita',source:'income',sourceId:inc.id,occMonth:occ,month:occ,date,category:inc.category||inc.name,description:inc.name,value:inc.value};
+}
 function materializeRecurringAndIncome(){
-  const cur = todayMonthKey();
-  const horizon = addMonthsToKey(cur,MATERIALIZE_AHEAD);
+  const horizon = limitMonth();
   state.incomes.forEach(inc=>{
     if(inc.status!=='ativa') return;
     if(inc.frequency==='unica'){
@@ -336,7 +356,7 @@ function materializeRecurringAndIncome(){
     }
     let m = monthKeyOf(inc.startDate);
     while(m<=horizon && (!inc.endDate || m<=monthKeyOf(inc.endDate))){
-      ensureTxn({type:'receita',source:'income',sourceId:inc.id,occMonth:m,month:m,category:inc.category||inc.name,description:inc.name,value:inc.value,date:m+'-'+pad(Math.min(parseInt(inc.day,10)||1, daysInMonth(m)))});
+      ensureTxn(incomeGenerated(inc,m));
       m = addMonthsToKey(m,1);
     }
   });
@@ -344,9 +364,25 @@ function materializeRecurringAndIncome(){
     if(r.status!=='ativa') return;
     let m = monthKeyOf(r.startDate);
     while(m<=horizon){
-      ensureTxn({type:'despesa',source:'recurring',sourceId:r.id,occMonth:m,month:m,category:r.category,description:r.name,value:r.value,paymentMethod:r.paymentMethod,date:m+'-'+pad(Math.min(parseInt(r.day,10)||1, daysInMonth(m)))});
+      ensureTxn(recurringGenerated(r,m));
       m = addMonthsToKey(m,1);
     }
+  });
+}
+function pruneFutureGenerated(){
+  // remove lançamentos gerados automaticamente além da janela de 3 meses (eram gerados 2 anos à frente).
+  // Preserva: pagos, receitas únicas e qualquer mês que você tenha editado à mão.
+  const lim = limitMonth();
+  state.transactions = state.transactions.filter(t=>{
+    if(t.status!=='pendente' || (t.source!=='recurring' && t.source!=='income') || !t.genKey) return true;
+    const occ = t.genKey.split(':')[2];
+    if(!occ || occ<=lim) return true;
+    const def = (t.source==='recurring'? state.recurring : state.incomes).find(d=>d.id===t.sourceId);
+    if(!def) return false;
+    if(t.source==='income' && def.frequency==='unica') return true;
+    const g = t.source==='recurring'? recurringGenerated(def,occ) : incomeGenerated(def,occ);
+    const untouched = t.date===g.date && t.description===g.description && Number(t.value)===Number(g.value) && (t.category||'')===(g.category||'');
+    return !untouched;
   });
 }
 function materializeInstallmentsDebts(){
@@ -358,6 +394,11 @@ function materializeInstallmentsDebts(){
       ensureTxn({type:'despesa',source:'installment',sourceId:inst.id,month:m,installmentIndex:i,category:inst.category,description:`${inst.name} (${i+1}/${inst.count})`,value:inst.installmentValue,cardId:inst.cardId||null,paymentMethod: inst.cardId?'Crédito':'Outro',date:dueDate});
     }
   });
+  state.transactions.forEach(t=>{
+    if(t.source!=='installment' || t.status!=='pendente' || !t.cardId) return;
+    const card = state.cards.find(c=>c.id===t.cardId);
+    if(card){ const nd = invoiceDueDate(card, t.month); if(t.date!==nd) t.date = nd; }
+  });
   state.debts.forEach(d=>{
     for(let i=0;i<d.count;i++){
       const m = addMonthsToKey(d.startMonth,i);
@@ -365,33 +406,46 @@ function materializeInstallmentsDebts(){
     }
   });
 }
-function materializeAll(){ rebuildIndex(); materializeRecurringAndIncome(); materializeInstallmentsDebts(); saveState(); }
+function materializeAll(){ pruneFutureGenerated(); rebuildIndex(); materializeRecurringAndIncome(); materializeInstallmentsDebts(); saveState(); }
 
-function virtualEntriesForMonth(monthKey){
+function virtualForOcc(occ){
   const out=[];
-  const horizon = addMonthsToKey(todayMonthKey(),MATERIALIZE_AHEAD);
   state.incomes.forEach(inc=>{
-    if(inc.status!=='ativa'||inc.frequency!=='mensal') return;
-    const offset = 0;
-    const m = addMonthsToKey(monthKey,-offset);
-    if(m<=horizon) return; // já foi materializado como lançamento real
-    if(m<monthKeyOf(inc.startDate)) return;
-    if(inc.endDate && m>monthKeyOf(inc.endDate)) return;
-    out.push({id:'v-'+inc.id+monthKey,type:'receita',category:inc.category||inc.name,description:inc.name,value:inc.value,month:monthKey,status:'pendente',source:'income',sourceId:inc.id,virtual:true});
+    if(inc.status!=='ativa' || inc.frequency!=='mensal') return;
+    if(occ<monthKeyOf(inc.startDate)) return;
+    if(inc.endDate && occ>monthKeyOf(inc.endDate)) return;
+    out.push({...incomeGenerated(inc,occ), id:'v-'+inc.id+'-'+occ, status:'pendente', virtual:true});
   });
   state.recurring.forEach(r=>{
     if(r.status!=='ativa') return;
-    const offset = 0;
-    const m = addMonthsToKey(monthKey,-offset);
-    if(m<=horizon) return;
-    if(m<monthKeyOf(r.startDate)) return;
-    out.push({id:'v-'+r.id+monthKey,type:'despesa',category:r.category,description:r.name,value:r.value,month:monthKey,status:'pendente',source:'recurring',sourceId:r.id,virtual:true});
+    if(occ<monthKeyOf(r.startDate)) return;
+    out.push({...recurringGenerated(r,occ), id:'v-'+r.id+'-'+occ, status:'pendente', virtual:true});
   });
   return out;
 }
+function virtualEntriesForMonth(monthKey){
+  const lim = limitMonth(), out=[];
+  [addMonthsToKey(monthKey,-1), monthKey].forEach(occ=>{
+    if(occ<=lim) return;
+    virtualForOcc(occ).forEach(v=>{ if(v.month===monthKey) out.push(v); });
+  });
+  return out;
+}
+function virtualEntriesBetween(fromIsoExclusive, toIsoInclusive){
+  const out=[]; let occ = addMonthsToKey(limitMonth(),1); const end = monthKeyOf(toIsoInclusive);
+  for(let guard=0; occ<=end && guard<240; guard++){
+    virtualForOcc(occ).forEach(v=>{ if(v.date>fromIsoExclusive && v.date<=toIsoInclusive) out.push(v); });
+    occ = addMonthsToKey(occ,1);
+  }
+  return out;
+}
+function virtualEntriesByDate(iso){
+  if(monthKeyOf(iso) <= limitMonth()) return [];
+  return virtualEntriesBetween(addDaysToISO(iso,-1), iso);
+}
 function getMonthTransactions(monthKey){
   let txns = state.transactions.filter(t=>t.month===monthKey);
-  if(monthKey > addMonthsToKey(todayMonthKey(),MATERIALIZE_AHEAD)) txns = txns.concat(virtualEntriesForMonth(monthKey));
+  if(monthKey > limitMonth()) txns = txns.concat(virtualEntriesForMonth(monthKey));
   return txns;
 }
 
@@ -514,9 +568,10 @@ function computeAlerts(){
   return alerts;
 }
 function cardUsed(cardId){
-  // soma tudo que ainda está pendente (não pago) vinculado a esse cartão — parcelamentos e lançamentos manuais no crédito
+  // pendente no cartão = limite comprometido. Assinaturas recorrentes só reservam a próxima cobrança, não os meses futuros.
+  const ciclo = addDaysToISO(todayISO(), 35);
   return state.transactions
-    .filter(t=>t.cardId===cardId && t.type==='despesa' && t.status==='pendente')
+    .filter(t=>t.cardId===cardId && t.type==='despesa' && t.status==='pendente' && (t.source!=='recurring' || t.date<=ciclo))
     .reduce((a,t)=>a+Number(t.value),0);
 }
 function installmentsPaidCount(sourceType,id){
@@ -818,9 +873,10 @@ RENDERERS.lancamentos = function(){
     </table></div>
   `;
   function rowLanc(t){
-    const shifted = t.date && t.month!==monthKeyOf(t.date);
+    const shifted = !t.cardId && t.date && t.month!==monthKeyOf(t.date);
+    const buyNote = t.purchaseDate && t.purchaseDate!==t.date? 'compra em '+fmtDate(t.purchaseDate) : '';
     return `<tr>
-      <td>${fmtDate(t.date)}${shifted?`<div class="help-text" style="margin:2px 0 0">competência: ${monthLabelShort(t.month)}</div>`:''}</td>
+      <td>${fmtDate(t.date)}${buyNote?`<div class="help-text" style="margin:2px 0 0">${buyNote}</div>`:(shifted?`<div class="help-text" style="margin:2px 0 0">competência: ${monthLabelShort(t.month)}</div>`:'')}</td>
       <td>${escapeHtml(t.description)}${t.source!=='manual'?`<span class="badge grey" style="margin-left:6px">${sourceLabel(t.source)}</span>`:''}</td>
       <td>${escapeHtml(t.category||'—')}</td>
       <td>${typeBadge(t.type)}</td>
@@ -855,7 +911,7 @@ function openLancModal(t, presetDate, presetType){
   const d = presetDate || todayISO();
   openFormModal({
     title: isEdit?'Editar lançamento':'Novo lançamento',
-    initial: t || {date:d,month:monthKeyOf(d),type:presetType||'despesa',status:'pendente',paymentMethod:'PIX',accountId:defaultAccountId()},
+    initial: t? {...t, date:(t.purchaseDate||t.date)} : {date:d,month:monthKeyOf(d),type:presetType||'despesa',status:'pendente',paymentMethod:'PIX',accountId:defaultAccountId()},
     fields:[
       {row:[{name:'type',label:'Tipo',type:'select',options:[{value:'despesa',label:'Despesa'},{value:'receita',label:'Receita'},{value:'transferencia',label:'Transferência'}]},
              {name:'status',label:'Status',type:'select',options:[{value:'pendente',label:'Pendente'},{value:'pago',label:'Pago'}]}]},
@@ -873,6 +929,12 @@ function openLancModal(t, presetDate, presetType){
       v.month = monthKeyOf(v.date);
       if(v.type==='transferencia'){ v.category='Transferência'; v.cardId=''; } else { v.toAccountId=''; }
       if(v.type==='receita'){ v.cardId=''; }
+      v.purchaseDate = '';
+      if(isEdit && t.source!=='manual' && v.date===t.date){ v.month = t.month; } // linha gerada: não mexe no mês da fatura
+      if(v.type==='despesa' && v.cardId && (!isEdit || t.source==='manual')){
+        const card = state.cards.find(c=>c.id===v.cardId);
+        if(card){ const inv = cardInvoiceFor(card, v.date); v.purchaseDate = v.date; v.date = inv.dueDate; v.month = inv.invoiceMonth; v.paymentMethod = 'Crédito'; }
+      }
       if(isEdit){ Object.assign(t,v); }
       else { state.transactions.push({id:uid(),source:'manual',sourceId:null,createdAt:Date.now(),...v}); }
       saveState(); renderAll();
@@ -964,10 +1026,11 @@ function balanceAsOfDate(iso){
       total += t.type==='receita'? Number(t.value) : -Number(t.value);
     }
   });
+  virtualEntriesBetween(todayIso, iso).forEach(v=>{ total += v.type==='receita'? Number(v.value) : -Number(v.value); });
   return total;
 }
 RENDERERS.planejamento = function(){
-  const dayTxns = state.transactions.filter(t=>t.date===planDay).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+  const dayTxns = state.transactions.filter(t=>t.date===planDay).concat(virtualEntriesByDate(planDay)).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
   const receitasDia = dayTxns.filter(t=>t.type==='receita').reduce((a,t)=>a+Number(t.value),0);
   const despesasDia = dayTxns.filter(t=>t.type==='despesa').reduce((a,t)=>a+Number(t.value),0);
   const saldo = balanceAsOfDate(planDay);
@@ -1003,8 +1066,8 @@ RENDERERS.planejamento = function(){
         <td>${escapeHtml(t.category||'—')}</td>
         <td>${typeBadge(t.type)}</td>
         <td class="right num">${fmtCurrency(t.value)}</td>
-        <td>${t.status==='pago'?'<span class="badge green">Pago</span>':'<span class="badge gold">Pendente</span>'}</td>
-        <td><button class="icon-btn" data-edit-day="${t.id}" title="Editar">${icon('edit',15)}</button></td>
+        <td>${t.virtual? '<span class="badge grey" title="Previsão da recorrência — vira lançamento uns 3 meses antes da data">Previsto</span>' : (t.status==='pago'?'<span class="badge green">Pago</span>':'<span class="badge gold">Pendente</span>')}</td>
+        <td>${t.virtual? `<button class="icon-btn" data-edit-src="${t.source}" data-src-id="${t.sourceId}" title="Editar a recorrência">${icon('edit',15)}</button>` : `<button class="icon-btn" data-edit-day="${t.id}" title="Editar">${icon('edit',15)}</button>`}</td>
       </tr>`).join('') : emptyRow(6,'calendar','Nada nesse dia','Nenhum lançamento registrado para essa data.')}</tbody>
     </table></div>
 
@@ -1035,6 +1098,10 @@ RENDERERS.planejamento = function(){
   if(todayBtn) todayBtn.onclick=()=>{planDay=todayISO();RENDERERS.planejamento();};
   $('#btn-new-lanc-day').onclick=()=>openLancModal(null, planDay);
   $$('[data-edit-day]').forEach(b=>b.onclick=()=>openLancModal(dayTxns.find(t=>t.id===b.dataset.editDay)));
+  $$('[data-edit-src]').forEach(b=>b.onclick=()=>{
+    if(b.dataset.editSrc==='income') openIncomeModal(state.incomes.find(i=>i.id===b.dataset.srcId));
+    else openRecModal(state.recurring.find(r=>r.id===b.dataset.srcId));
+  });
   $$('#view-planejamento [data-window]').forEach(b=>b.onclick=()=>{ upcomingWindow=parseInt(b.dataset.window); RENDERERS.planejamento(); });
   $$('#view-planejamento [data-mark-paid]').forEach(b=>b.onclick=()=>markTransactionPaid(b.dataset.markPaid));
   $$('#view-planejamento [data-goto]').forEach(c=>c.onclick=()=>switchView(c.dataset.goto));
@@ -1431,7 +1498,7 @@ RENDERERS.recorrentes = function(){
 };
 function renderRecDespesas(subsAtivas,subsTotal){
   function rowRec(r){
-    return `<tr><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.category||'—')}</td><td class="right num">${fmtCurrency(r.value)}</td><td>${r.day||'—'}</td>
+    return `<tr><td>${escapeHtml(r.name)}${r.cardId?`<span class="badge grey" style="margin-left:6px">${escapeHtml((state.cards.find(c=>c.id===r.cardId)||{}).name||'Cartão')}</span>`:''}</td><td>${escapeHtml(r.category||'—')}</td><td class="right num">${fmtCurrency(r.value)}</td><td>${r.day||'—'}</td>
       <td>${r.isSubscription?'<span class="badge gold">Sim</span>':'—'}</td>
       <td>${r.status==='ativa'?'<span class="badge green">Ativa</span>':'<span class="badge grey">Inativa</span>'}</td>
       <td><button class="icon-btn" data-edit-rec="${r.id}">${icon('edit',15)}</button><button class="icon-btn" data-del-rec="${r.id}">${icon('trash',15)}</button></td></tr>`;
@@ -1461,10 +1528,12 @@ function openRecModal(r){
              {name:'value',label:'Valor',type:'currency',required:true}]},
       {row:[{name:'day',label:'Dia do mês',type:'number'},{name:'startDate',label:'Início',type:'date',required:true}]},
       {name:'paymentMethod',label:'Forma de pagamento',type:'select',options:['Dinheiro','PIX','Débito','Crédito','Transferência','Outro'].map(v=>({value:v,label:v}))},
+      {name:'cardId',label:'Cartão (se for compra no crédito)',type:'select',options:cardOptions()},
       {name:'isSubscription',label:'É uma assinatura',type:'checkbox'},
       {name:'status',label:'Status',type:'select',options:[{value:'ativa',label:'Ativa'},{value:'inativa',label:'Inativa'}]}
     ],
     onSubmit(v){
+      if(v.cardId) v.paymentMethod = 'Crédito';
       if(isEdit){
         Object.assign(r,v);
         state.transactions = state.transactions.filter(t=>!(t.source==='recurring'&&t.sourceId===r.id&&t.status!=='pago'));
