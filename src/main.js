@@ -744,6 +744,84 @@ function accountOptions(){ return state.accounts.map(a=>({value:a.id,label:a.nam
 /* ===================== DASHBOARD ===================== */
 let upcomingWindow = 7;
 let spendWindow = 30;
+/* ===================== BOAS-VINDAS DO DASHBOARD ===================== */
+function greetingFor(date){
+  const h = (date || new Date()).getHours();
+  return h<5? 'Boa noite' : h<12? 'Bom dia' : h<18? 'Boa tarde' : 'Boa noite';
+}
+function friendlyName(){
+  const first = ((state.settings && state.settings.nome) || '').trim().split(/\s+/)[0] || '';
+  return first? first.charAt(0).toUpperCase()+first.slice(1) : '';
+}
+function dashboardMessage(){
+  const today = todayISO();
+  if(!state.transactions.length && !state.incomes.length && !state.recurring.length){
+    return {ic:'sparkles', text:'Vamos organizar suas finanças? Siga os passos abaixo e, em poucos minutos, tudo fica claro.'};
+  }
+  const pend = state.transactions.filter(t=>t.status==='pendente' && t.type==='despesa' && t.date);
+  const late = pend.filter(t=>t.date<today);
+  if(late.length){
+    return {ic:'alertTriangle', goto:'planejamento', text: late.length===1
+      ? 'Há 1 conta com vencimento já passado esperando para ser marcada como paga.'
+      : `Há ${late.length} contas com vencimento já passado esperando para serem marcadas como pagas.`};
+  }
+  const soon = pend.filter(t=>t.date>=today && t.date<=addDaysToISO(today,7)).sort((a,b)=>a.date.localeCompare(b.date));
+  if(soon.length){
+    const n = daysBetween(today, soon[0].date);
+    const when = n===0? 'hoje' : n===1? 'amanhã' : `em ${n} dias`;
+    return {ic:'calendar', goto:'planejamento', text:`Próximo vencimento: ${soon[0].description}, ${when}.`+(soon.length>1? ` Mais ${soon.length-1} nos próximos 7 dias.` : '')};
+  }
+  return {ic:'checkCircle', text:'Tudo em dia por aqui. Nenhum vencimento nos próximos 7 dias.'};
+}
+function dashboardHeader(){
+  const name = friendlyName();
+  const base = name || (typeof currentUser!=='undefined' && currentUser && currentUser.email) || 'K';
+  const msg = dashboardMessage();
+  return `<div class="view-head hello-head">
+    <div class="hello">
+      <div class="avatar">${escapeHtml(base.charAt(0).toUpperCase())}</div>
+      <div class="hello-body">
+        <h1>Olá${name? ', '+escapeHtml(name) : '!'}</h1>
+        <div class="view-sub">${greetingFor()} · ${dayLabel(todayISO())}</div>
+        <div class="hello-msg">${icon(msg.ic,15)}<span>${escapeHtml(msg.text)}</span>${msg.goto? `<button class="btn small" data-goto="${msg.goto}">Ver</button>` : ''}</div>
+        ${name? '' : `<form id="quick-name" class="quick-name"><input type="text" id="quick-name-input" placeholder="Como você gostaria de ser chamado?" maxlength="40" autocomplete="given-name"><button class="btn small primary" type="submit">Salvar</button></form>`}
+      </div>
+    </div>
+  </div>`;
+}
+function firstStepsCard(){
+  if(state.transactions.length || state.incomes.length || state.recurring.length) return '';
+  const steps = [
+    {done: state.accounts.some(a=>Number(a.initialBalance)!==0), label:'Informe quanto você tem hoje', desc:'Defina o saldo da sua conta', view:'contas'},
+    {done: false, label:'Cadastre suas receitas fixas', desc:'Salário, adiantamento, pensão…', view:'recorrentes', rtab:'receitas'},
+    {done: false, label:'Cadastre suas despesas fixas', desc:'Assinaturas, gasolina, contas da casa…', view:'recorrentes', rtab:'despesas'},
+    {done: false, label:'Registre seus gastos do dia a dia', desc:'Cada lançamento atualiza tudo sozinho', view:'lancamentos'}
+  ];
+  return `<div class="card first-steps">
+    <div class="stat-label">Primeiros passos</div>
+    <div class="steps-list">${steps.map((st,i)=>`<button class="step-btn ${st.done?'done':''}" data-view="${st.view}"${st.rtab?` data-rtab="${st.rtab}"`:''}>
+      <span class="step-num">${st.done? icon('checkCircle',16) : i+1}</span>
+      <span class="step-text"><strong>${st.label}</strong><small>${st.desc}</small></span>
+      ${icon('chevronRight',15)}
+    </button>`).join('')}</div>
+  </div>`;
+}
+function wireDashboardHeader(){
+  const form = document.getElementById('quick-name');
+  if(form) form.onsubmit = (e)=>{
+    e.preventDefault();
+    const v = (document.getElementById('quick-name-input').value||'').trim();
+    if(!v) return;
+    state.settings.nome = v;
+    saveState(true);
+    renderAll();
+  };
+  $$('#view-dashboard .step-btn').forEach(b=>b.onclick=()=>{
+    if(b.dataset.rtab) recorrentesTab = b.dataset.rtab;
+    switchView(b.dataset.view);
+  });
+}
+
 RENDERERS.dashboard = function(){
   const cur = todayMonthKey();
   const s = monthSummary(cur);
@@ -768,9 +846,8 @@ RENDERERS.dashboard = function(){
   const beText = be.status==='verde'?'Positivo — margem confortável':be.status==='amarelo'?'Atenção — margem baixa':'Déficit projetado';
 
   $('#view-dashboard').innerHTML = `
-    <div class="view-head">
-      <div><h1>Dashboard</h1><div class="view-sub">${monthLabel(cur)} · visão geral das suas finanças</div></div>
-    </div>
+    ${dashboardHeader()}
+    ${firstStepsCard()}
 
     <div class="status-banner" style="--c:var(--${beColor==='green'?'green':beColor==='gold'?'yellow':'red'});background:var(--${beColor==='green'?'green-bg':beColor==='gold'?'yellow-bg':'red-bg'});color:var(--${beColor==='green'?'green':beColor==='gold'?'yellow':'red'})">
       <div class="icon-badge ${beColor==='green'?'green':beColor==='gold'?'yellow':'red'}" style="margin-bottom:0">${icon(beColor==='green'?'checkCircle':'alertTriangle',18)}</div>
@@ -825,6 +902,7 @@ RENDERERS.dashboard = function(){
     <div>${computeAlerts().map(a=>`<div class="alert-item ${a.sev==='rust'?'rust':''}" style="${a.sev==='green'?'background:var(--green-bg);color:var(--green)':a.sev==='grey'?'background:var(--panel-2);color:var(--ink-soft)':''}">${icon(a.sev==='green'?'checkCircle':a.sev==='grey'?'info':'alertTriangle',16)}<span>${escapeHtml(a.msg)}</span></div>`).join('')}</div>
   `;
   $$('#view-dashboard [data-goto]').forEach(c=>c.onclick=()=>switchView(c.dataset.goto));
+  wireDashboardHeader();
   $$('#view-dashboard [data-spend-window]').forEach(b=>b.onclick=()=>{ spendWindow=parseInt(b.dataset.spendWindow); RENDERERS.dashboard(); });
   balanceEvolutionChart('chart-dashboard-balance',5,6);
 };

@@ -475,3 +475,47 @@ tbody tr:hover{background:rgba(162,75,255,.10);}
   :root{--glass:rgba(22,11,40,.94);--glass-strong:rgba(18,9,34,.98);}
   .topbar{background:rgba(7,3,15,.97);}
 }
+
+/* ---------- Boas-vindas do Dashboard ---------- */
+.hello-head{align-items:center;}
+.hello{display:flex;align-items:center;gap:18px;}
+.avatar{
+  flex-shrink:0;width:58px;height:58px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-family:'Sora',sans-serif;font-weight:700;font-size:23px;color:#fff;
+  background:linear-gradient(135deg,#C379FF 0%,#8A2BFF 55%,#6A1BFF 100%);
+  border:1px solid rgba(214,170,255,.65);
+  box-shadow:0 0 28px rgba(162,75,255,.55),inset 0 1px 0 rgba(255,255,255,.4);
+}
+.hello h1{font-size:26px;}
+.hello-msg{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:9px;font-size:13.5px;color:var(--ink-soft);}
+.hello-msg .ic{color:var(--purple-bright);flex-shrink:0;}
+.quick-name{display:flex;gap:8px;margin-top:12px;max-width:430px;}
+.quick-name input{
+  flex:1;min-width:0;padding:8px 12px;font-size:13px;color:var(--ink);
+  background-color:rgba(8,4,18,.55);border:1px solid var(--glass-border);border-radius:var(--r);
+  transition:border-color .2s,box-shadow .2s;
+}
+.quick-name input:focus{outline:none;border-color:var(--purple-bright);box-shadow:0 0 0 3px rgba(162,75,255,.2),0 0 20px rgba(162,75,255,.35);}
+.first-steps{margin-bottom:16px;}
+.steps-list{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-top:4px;}
+.step-btn{
+  display:flex;align-items:center;gap:12px;text-align:left;cursor:pointer;
+  padding:12px 14px;color:var(--ink);font-family:inherit;
+  background:rgba(162,75,255,.07);border:1px solid var(--glass-border);border-radius:var(--r);
+  transition:all .22s ease;
+}
+.step-btn:hover{background:rgba(162,75,255,.20);border-color:var(--purple-bright);box-shadow:0 0 20px var(--purple-glow);transform:translateY(-1px);}
+.step-btn > .ic:last-child{margin-left:auto;color:var(--ink-dim);}
+.step-num{
+  flex-shrink:0;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-family:'Sora',sans-serif;font-weight:700;font-size:13px;color:var(--purple-bright);background:rgba(162,75,255,.2);
+}
+.step-btn.done .step-num{background:rgba(61,240,138,.15);color:var(--green);}
+.step-text strong{display:block;font-size:13.5px;}
+.step-text small{display:block;margin-top:2px;font-size:12px;color:var(--ink-soft);}
+@media(max-width:860px){
+  .hello{gap:14px;}
+  .avatar{width:48px;height:48px;font-size:19px;}
+  .hello h1{font-size:22px;}
+}
