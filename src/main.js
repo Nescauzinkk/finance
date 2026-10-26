@@ -326,7 +326,7 @@ function ensureTxn(def){
     cardId:def.cardId||null, accountId: def.accountId || defaultAccountId(),
     status: def.status || (def.month < todayMonthKey() ? 'pago':'pendente'),
     note:'', source:def.source, sourceId:def.sourceId, installmentIndex:def.installmentIndex ?? null,
-    createdAt:Date.now()
+    preSettled: !!def.preSettled, createdAt:Date.now()
   };
   state.transactions.push(t);
   state._txnIndex.add(key);
@@ -402,9 +402,23 @@ function materializeInstallmentsDebts(){
   state.debts.forEach(d=>{
     for(let i=0;i<d.count;i++){
       const m = addMonthsToKey(d.startMonth,i);
-      ensureTxn({type:'despesa',source:'debt',sourceId:d.id,month:m,installmentIndex:i,category:'Dívidas',description:`${d.name} (${i+1}/${d.count})`,value:d.installmentValue,paymentMethod:'Outro',date:m+'-'+pad(Math.min(parseInt(d.dueDay,10)||10, daysInMonth(m)))});
+      const def = {type:'despesa',source:'debt',sourceId:d.id,month:m,installmentIndex:i,category:'Dívidas',description:`${d.name} (${i+1}/${d.count})`,value:d.installmentValue,paymentMethod:'Outro',date:debtDate(d,i)};
+      if(d.alreadyPaid!=null){ // as primeiras N parcelas já foram pagas antes: ficam pagas e não descontam do saldo de novo
+        def.status = i < d.alreadyPaid ? 'pago' : 'pendente';
+        def.preSettled = i < d.alreadyPaid;
+      }
+      ensureTxn(def);
     }
   });
+}
+function debtDate(d,i){
+  const m = addMonthsToKey(d.startMonth,i);
+  return m+'-'+pad(Math.min(parseInt(d.dueDay,10)||10, daysInMonth(m)));
+}
+function autoPaidCount(d){
+  let n = 0;
+  for(let i=0;i<d.count;i++){ if(debtDate(d,i) < todayISO()) n++; }
+  return n;
 }
 function materializeAll(){ pruneFutureGenerated(); rebuildIndex(); materializeRecurringAndIncome(); materializeInstallmentsDebts(); saveState(); }
 
@@ -492,7 +506,7 @@ function breakeven(monthKey){
 function canSpendNow(days){
   const today = todayISO();
   const limit = addDaysToISO(today, days);
-  let total = Number(state.settings.currentBalance)||0;
+  let total = totalAvailable();
   state.transactions.forEach(t=>{
     if(t.status!=='pendente' || !t.date) return;
     if(t.date>=today && t.date<=limit){
@@ -678,7 +692,7 @@ function fieldHtml(f,val){
     const display = v!==''? formatCurrencyDigits(v) : '';
     return `<div class="field"><label>${f.label}</label><div class="currency-input"><span class="prefix">R$</span><input type="text" inputmode="decimal" autocomplete="off" class="currency-mask" name="${f.name}" value="${escapeHtml(display)}" placeholder="0,00" ${f.required?'required':''}></div></div>`;
   }
-  return `<div class="field"><label>${f.label}</label><input type="${f.type}" name="${f.name}" value="${escapeHtml(v)}" ${f.required?'required':''} ${f.step?`step="${f.step}"`:''} ${f.min!=null?`min="${f.min}"`:''}></div>`;
+  return `<div class="field"><label>${f.label}</label><input type="${f.type}" name="${f.name}" value="${escapeHtml(v)}" ${f.required?'required':''} ${f.step?`step="${f.step}"`:''} ${f.min!=null?`min="${f.min}"`:''} ${f.placeholder?`placeholder="${escapeHtml(f.placeholder)}"`:''} ${f.inputmode?`inputmode="${f.inputmode}"`:''}></div>`;
 }
 function openFormModal({title,fields,initial={},onSubmit,submitLabel,onDelete}){
   const rows = fields.map(f=>{
@@ -895,7 +909,7 @@ RENDERERS.dashboard = function(){
     <div class="card">
       <div class="icon-badge ${canSpend>=0?'green':'red'}">${icon('sparkles',17)}</div>
       <div class="stat-value ${canSpend>=0?'pos':'neg'} num" style="font-size:32px">${fmtCurrency(canSpend)}</div>
-      <div class="stat-foot">Saldo atual (${fmtCurrency(state.settings.currentBalance||0)}) já descontando tudo que ainda está pendente para pagar ou receber nos próximos ${spendWindow} dias, e reservas de metas planejadas.</div>
+      <div class="stat-foot">Seu saldo em contas (${fmtCurrency(totalAvailable())}) já descontando tudo que ainda está pendente para pagar ou receber nos próximos ${spendWindow} dias, e reservas de metas planejadas.</div>
     </div>
 
     <div class="section-title"><h2>Alertas financeiros</h2></div>
@@ -1047,7 +1061,7 @@ function dayLabel(iso){
   return `${WEEKDAY_NAMES[d.getDay()]}, ${d.getDate()} de ${MONTH_NAMES[d.getMonth()].toLowerCase()} de ${d.getFullYear()}`;
 }
 function txCountsForBalance(t){
-  if(!t.date) return false;
+  if(!t.date || t.preSettled) return false; // preSettled = parcela já paga antes do Kivo, já embutida no saldo
   const acc = state.accounts.find(a=>a.id===t.accountId);
   if(acc && acc.createdAt){
     const sinceDate = new Date(acc.createdAt).toISOString().slice(0,10);
@@ -1486,7 +1500,7 @@ function openDebtModal(d){
   const isEdit=!!d;
   openFormModal({
     title:isEdit?'Editar dívida':'Nova dívida',
-    initial: d||{startMonth:todayMonthKey(),count:1,dueDay:10},
+    initial: d? {...d, alreadyPaid:(d.alreadyPaid!=null? d.alreadyPaid : autoPaidCount(d))} : {startMonth:todayMonthKey(),count:1,dueDay:10},
     fields:[
       {name:'name',label:'Nome',type:'text',required:true},
       {name:'description',label:'Descrição',type:'text'},
@@ -1496,12 +1510,19 @@ function openDebtModal(d){
              {name:'interest',label:'Juros (% a.m., opcional)',type:'number',step:'0.01'}]},
       {row:[{name:'startMonth',label:'Mês da 1ª parcela',type:'month',required:true},
              {name:'dueDay',label:'Dia de vencimento',type:'number'}]},
+      {name:'alreadyPaid',label:'Parcelas já pagas (opcional)',type:'text',inputmode:'numeric',placeholder:'Em branco: o Kivo conta as vencidas até hoje'},
       {name:'note',label:'Observação',type:'textarea'}
     ],
     onSubmit(v){
       v.count = Math.max(1,parseInt(v.count));
+      const raw = String(v.alreadyPaid==null? '' : v.alreadyPaid).trim();
+      v.alreadyPaid = raw===''? autoPaidCount(v) : Math.max(0, Math.min(parseInt(raw,10)||0, v.count));
       if(isEdit){ Object.assign(d,v);
-        state.transactions = state.transactions.filter(t=>!(t.source==='debt'&&t.sourceId===d.id&&t.status!=='pago'));
+        // mantém só o que você marcou como pago depois das parcelas já pagas; o resto é regerado com as regras novas
+        state.transactions = state.transactions.filter(t=>{
+          if(t.source!=='debt' || t.sourceId!==d.id) return true;
+          return t.installmentIndex>=d.alreadyPaid && t.status==='pago' && !t.preSettled;
+        });
         materializeAll(); renderAll();
       } else { state.debts.push({id:uid(),...v}); materializeAll(); renderAll(); }
     },
