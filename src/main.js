@@ -391,7 +391,12 @@ function materializeInstallmentsDebts(){
     for(let i=0;i<inst.count;i++){
       const m = addMonthsToKey(inst.startMonth,i);
       const dueDate = card? invoiceDueDate(card,m) : m+'-05';
-      ensureTxn({type:'despesa',source:'installment',sourceId:inst.id,month:m,installmentIndex:i,category:inst.category,description:`${inst.name} (${i+1}/${inst.count})`,value:inst.installmentValue,cardId:inst.cardId||null,paymentMethod: inst.cardId?'Crédito':'Outro',date:dueDate});
+      const def = {type:'despesa',source:'installment',sourceId:inst.id,month:m,installmentIndex:i,category:inst.category,description:`${inst.name} (${i+1}/${inst.count})`,value:inst.installmentValue,cardId:inst.cardId||null,paymentMethod: inst.cardId?'Crédito':'Outro',date:dueDate};
+      if(inst.alreadyPaid!=null){ // as primeiras N já foram pagas antes: ficam pagas e não descontam do saldo de novo
+        def.status = i < inst.alreadyPaid ? 'pago' : 'pendente';
+        def.preSettled = i < inst.alreadyPaid;
+      }
+      ensureTxn(def);
     }
   });
   state.transactions.forEach(t=>{
@@ -418,6 +423,22 @@ function debtDate(d,i){
 function autoPaidCount(d){
   let n = 0;
   for(let i=0;i<d.count;i++){ if(debtDate(d,i) < todayISO()) n++; }
+  return n;
+}
+function instDate(inst,i){
+  const m = addMonthsToKey(inst.startMonth,i);
+  const card = inst.cardId? state.cards.find(c=>c.id===inst.cardId) : null;
+  return card? invoiceDueDate(card,m) : m+'-05';
+}
+function autoPaidCountInst(inst){
+  let n = 0;
+  for(let i=0;i<inst.count;i++){ if(instDate(inst,i) < todayISO()) n++; }
+  return n;
+}
+function paidLeadingCount(sourceType,id){
+  const rows = state.transactions.filter(t=>t.source===sourceType && t.sourceId===id);
+  let n = 0;
+  while(rows.some(t=>t.installmentIndex===n && t.status==='pago')) n++;
   return n;
 }
 function materializeAll(){ pruneFutureGenerated(); rebuildIndex(); materializeRecurringAndIncome(); materializeInstallmentsDebts(); saveState(); }
@@ -1313,13 +1334,17 @@ function openPurchaseModal(){
              {name:'cardId',label:'Cartão',type:'select',options:state.cards.map(c=>({value:c.id,label:c.name}))}]},
       {row:[{name:'totalValue',label:'Valor total',type:'currency',required:true},
              {name:'count',label:'Nº de parcelas',type:'number',required:true}]},
-      {name:'purchaseDate',label:'Data da compra',type:'date',required:true}
+      {name:'purchaseDate',label:'Data da compra',type:'date',required:true},
+      {name:'alreadyPaid',label:'Parcelas já pagas (opcional)',type:'text',inputmode:'numeric',placeholder:'Em branco: o Kivo conta as vencidas até hoje'}
     ],
     onSubmit(v){
       const count = Math.max(1,parseInt(v.count));
       const card = state.cards.find(c=>c.id===v.cardId);
       const startMonth = firstInvoiceMonth(card, v.purchaseDate);
-      state.installments.push({id:uid(),name:v.name,category:v.category,totalValue:v.totalValue,installmentValue:Math.round(v.totalValue/count*100)/100,count,startMonth,cardId:v.cardId,status:'ativo',note:''});
+      const inst = {id:uid(),name:v.name,category:v.category,totalValue:v.totalValue,installmentValue:Math.round(v.totalValue/count*100)/100,count,startMonth,cardId:v.cardId,status:'ativo',note:''};
+      const raw = String(v.alreadyPaid==null? '' : v.alreadyPaid).trim();
+      inst.alreadyPaid = raw===''? autoPaidCountInst(inst) : Math.max(0, Math.min(parseInt(raw,10)||0, count));
+      state.installments.push(inst);
       materializeAll(); renderAll();
     }
   });
@@ -1327,14 +1352,30 @@ function openPurchaseModal(){
 
 /* ===================== FATURAS (parcelamentos no cartão) ===================== */
 function currentInvoiceInfo(cardId){
-  const today = todayISO();
-  const txns = state.transactions.filter(t=>t.cardId===cardId && t.type==='despesa' && t.date);
-  const upcoming = txns.filter(t=>t.date>=today).sort((a,b)=>a.date.localeCompare(b.date));
-  if(!upcoming.length) return null;
-  const dueDate = upcoming[0].date;
-  const items = txns.filter(t=>t.date===dueDate);
-  const total = items.reduce((s,t)=>s+Number(t.value),0);
-  return {dueDate, total, count:items.length};
+  // a fatura "aberta" é a do vencimento mais próximo que ainda tem algo a pagar (inclui atrasadas)
+  const pend = state.transactions.filter(t=>t.cardId===cardId && t.type==='despesa' && t.status==='pendente' && t.date);
+  if(!pend.length) return null;
+  const dueDate = pend.map(t=>t.date).sort()[0];
+  const items = pend.filter(t=>t.date===dueDate);
+  return {dueDate, total:items.reduce((s,t)=>s+Number(t.value),0), count:items.length, late:dueDate<todayISO(), ids:items.map(t=>t.id)};
+}
+function openPayInvoiceModal(cardId){
+  const card = state.cards.find(c=>c.id===cardId);
+  const info = currentInvoiceInfo(cardId);
+  if(!card || !info) return;
+  openFormModal({
+    title:`Pagar fatura ${card.name} · ${fmtCurrency(info.total)}`,
+    initial:{accountId:defaultAccountId()},
+    fields:[{name:'accountId',label:`Conta de onde saiu o pagamento · vence ${fmtDate(info.dueDate)} · ${info.count} lançamento(s)`,type:'select',options:accountOptions()}],
+    submitLabel:'Marcar como paga',
+    onSubmit(v){
+      info.ids.forEach(id=>{
+        const t = state.transactions.find(x=>x.id===id);
+        if(t){ t.status = 'pago'; t.accountId = v.accountId || t.accountId || defaultAccountId(); }
+      });
+      saveState(); renderAll();
+    }
+  });
 }
 function invoiceTotalsByMonth(cardId, monthsBack){
   const cur = todayMonthKey();
@@ -1361,10 +1402,11 @@ RENDERERS.parcelamentos = function(){
     <div class="section-title" style="margin-top:0"><h2>Fatura aberta</h2></div>
     <div class="grid grid-3">${currentInvoices.map(({card,info})=>`
       <div class="card">
-        <div class="stat-label">${escapeHtml(card.name)}</div>
+        <div class="stat-label">${escapeHtml(card.name)} ${info && info.late? '<span class="badge rust">Atrasada</span>' : ''}</div>
         <div class="stat-value neg num">${info? fmtCurrency(info.total) : fmtCurrency(0)}</div>
-        <div class="stat-foot">${info? 'Vence em '+fmtDate(info.dueDate)+' · '+info.count+' lançamento(s)' : 'Sem fatura em aberto'}</div>
+        <div class="stat-foot">${info? 'A pagar · vence em '+fmtDate(info.dueDate)+' · '+info.count+' lançamento(s)' : 'Sem fatura em aberto'}</div>
         <div class="stat-foot">Fecha dia ${card.closingDay||'—'} · vence dia ${card.dueDay||'—'}</div>
+        ${info? `<div style="margin-top:12px"><button class="btn small primary" data-pay-invoice="${card.id}">${icon('checkCircle',14)} Marcar fatura como paga</button></div>` : ''}
       </div>`).join('')}</div>
 
     <div class="section-title"><h2>Comparativo de faturas</h2>
@@ -1392,6 +1434,7 @@ RENDERERS.parcelamentos = function(){
     </div>`;
   }
   $('#btn-new-inst').onclick=()=>openInstallmentModal();
+  $$('[data-pay-invoice]').forEach(b=>b.onclick=()=>openPayInvoiceModal(b.dataset.payInvoice));
   $$('[data-edit-inst]').forEach(b=>b.onclick=()=>openInstallmentModal(state.installments.find(i=>i.id===b.dataset.editInst)));
   $$('[data-del-inst]').forEach(b=>b.onclick=()=>confirmModal('Excluir parcelamento?','As parcelas já lançadas em Lançamentos também serão removidas.',()=>{
     const id=b.dataset.delInst;
@@ -1420,7 +1463,7 @@ function openInstallmentModal(inst){
   const isEdit=!!inst;
   openFormModal({
     title: isEdit?'Editar parcelamento':'Novo parcelamento',
-    initial: inst || {startMonth:todayMonthKey(),count:1},
+    initial: inst? {...inst, alreadyPaid:(inst.alreadyPaid!=null? inst.alreadyPaid : '')} : {startMonth:todayMonthKey(),count:1},
     fields:[
       {name:'name',label:'Nome',type:'text',required:true},
       {row:[{name:'category',label:'Categoria',type:'select',options:categoryOptions('despesa')},
@@ -1428,16 +1471,25 @@ function openInstallmentModal(inst){
       {row:[{name:'totalValue',label:'Valor total',type:'currency',required:true},
              {name:'count',label:'Nº de parcelas',type:'number',required:true}]},
       {name:'startMonth',label:'Mês da 1ª parcela',type:'month',required:true},
+      {name:'alreadyPaid',label:'Parcelas já pagas (opcional)',type:'text',inputmode:'numeric',placeholder:(isEdit && inst.alreadyPaid==null)? 'Em branco: mantém como está' : 'Em branco: o Kivo conta as vencidas até hoje'},
       {name:'note',label:'Observação',type:'textarea'}
     ],
     onSubmit(v){
       const count = Math.max(1,parseInt(v.count));
       const installmentValue = Math.round(v.totalValue/count*100)/100;
+      const raw = String(v.alreadyPaid==null? '' : v.alreadyPaid).trim();
+      if(raw!==''){ v.alreadyPaid = Math.max(0, Math.min(parseInt(raw,10)||0, count)); }
+      else { v.alreadyPaid = isEdit? inst.alreadyPaid : autoPaidCountInst({...v,count}); } // editar em branco = não mexe
       if(isEdit){
         const scheduleChanged = inst.count!==count || inst.startMonth!==v.startMonth || inst.totalValue!==v.totalValue;
         const applyUpdate = ()=>{
-          state.transactions = state.transactions.filter(t=>!(t.source==='installment'&&t.sourceId===inst.id&&t.status!=='pago'));
           Object.assign(inst,v,{count,installmentValue});
+          const N = inst.alreadyPaid;
+          state.transactions = state.transactions.filter(t=>{
+            if(t.source!=='installment' || t.sourceId!==inst.id) return true;
+            if(N==null) return t.status==='pago';                              // parcelamento antigo: regra de sempre
+            return t.installmentIndex>=N && t.status==='pago' && !t.preSettled; // mantém só o que foi pago pelo app
+          });
           materializeAll(); renderAll();
         };
         if(scheduleChanged){
