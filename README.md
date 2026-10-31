@@ -130,3 +130,12 @@ sign up"** está **ativada** (se você a desativou antes por segurança,
 reative temporariamente ou apenas enquanto convida as pessoas). Depois
 disso, a pessoa só precisa acessar o link do app e clicar em "Criar conta".
 
+
+
+## Histórico de versões (opcional)
+
+O Kivo guarda cópias automáticas dos seus dados (no máximo uma por hora, as últimas 30) e permite restaurar uma versão anterior em **Configurações › Histórico de versões**.
+
+Para ativar, rode **uma única vez** o SQL do final de `supabase/schema.sql` no SQL Editor do Supabase (ele só cria uma tabela nova, sem mexer nos dados existentes). Se a tabela não existir, o resto do app funciona normalmente e a própria tela de Configurações mostra como ativar.
+
+O salvamento também avisa na tela quando falha (e tenta de novo sozinho) e detecta quando outro aparelho salvou alterações, pedindo sua escolha em vez de sobrescrever.

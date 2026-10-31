@@ -269,11 +269,58 @@ function translateAuthError(msg){
 let state = null;
 let saveTimer = null;
 
-async function loadState(){
-  const { data, error } = await supabase.from('app_state').select('data').eq('user_id', currentUser.id).maybeSingle();
-  if(error){ console.error('Erro ao carregar dados:', error); state = defaultState(); }
-  else if(data && data.data){ state = data.data; }
-  else { state = defaultState(); }
+/* ===== SYNC:BEGIN — salvamento seguro, conflito entre aparelhos e histórico de versões ===== */
+const SNAPSHOT_EVERY_MS = 60*60*1000;   // no máximo uma cópia automática por hora
+const HISTORY_KEEP = 30;                // quantas cópias ficam guardadas
+const RETRY_DELAYS = [3000,8000,20000,45000,60000];
+const HISTORY_SQL = `-- Histórico de versões do Kivo (rode uma única vez no SQL Editor do Supabase).
+-- Só CRIA uma tabela nova: não altera nenhum dado nem a tabela app_state.
+create table if not exists public.app_state_history (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  reason text not null default 'Automática',
+  summary jsonb not null default '{}'::jsonb,
+  data jsonb not null
+);
+
+create index if not exists app_state_history_user_created
+  on public.app_state_history (user_id, created_at desc);
+
+alter table public.app_state_history enable row level security;
+
+drop policy if exists "Usuário lê apenas seu próprio histórico" on public.app_state_history;
+create policy "Usuário lê apenas seu próprio histórico"
+  on public.app_state_history for select using (auth.uid() = user_id);
+
+drop policy if exists "Usuário cria apenas seu próprio histórico" on public.app_state_history;
+create policy "Usuário cria apenas seu próprio histórico"
+  on public.app_state_history for insert with check (auth.uid() = user_id);
+
+drop policy if exists "Usuário apaga apenas seu próprio histórico" on public.app_state_history;
+create policy "Usuário apaga apenas seu próprio histórico"
+  on public.app_state_history for delete using (auth.uid() = user_id);
+`;
+let syncNow = ()=>Date.now();
+let serverStamp = null;      // updated_at que o servidor tinha quando carregamos/salvamos por último
+let lastSavedJson = '';      // como estavam os dados no servidor (para saber se algo mudou de verdade)
+let dirty = false, saving = false, pendingAgain = false, conflict = false;
+let retryTimer = null, retryCount = 0, lastRemoteCheck = 0, syncListenersOn = false;
+let historyAvailable = null, historyReady = Promise.resolve(), lastSnapshotAt = 0;
+
+function resetSyncState(){
+  clearTimeout(saveTimer); clearTimeout(retryTimer);
+  serverStamp = null; lastSavedJson = '';
+  dirty = false; saving = false; pendingAgain = false; conflict = false;
+  retryCount = 0; lastRemoteCheck = 0; lastSnapshotAt = 0; historyAvailable = null;
+  hideSaveBanner();
+}
+function cloneForSave(){
+  const c = {...state}; delete c._txnIndex;
+  return JSON.parse(JSON.stringify(c));
+}
+function adoptData(raw){
+  state = (raw && typeof raw==='object')? raw : defaultState();
   if(!state.categories || !state.categories.length) state.categories = defaultCategories();
   ['accounts','cards','incomes','recurring','installments','debts','goals','transactions'].forEach(k=>{ if(!state[k]) state[k]=[]; });
   if(!state.settings) state.settings = defaultState().settings;
@@ -281,6 +328,300 @@ async function loadState(){
   migrateToAccounts();
   rebuildIndex();
 }
+async function loadState(){
+  // se falhar, NÃO seguimos com dados vazios (isso poderia sobrescrever os dados reais no próximo salvamento)
+  const { data, error } = await supabase.from('app_state').select('data, updated_at').eq('user_id', currentUser.id).maybeSingle();
+  if(error) throw error;
+  resetSyncState();
+  if(data && data.data){
+    serverStamp = data.updated_at;
+    lastSavedJson = JSON.stringify(data.data);
+    adoptData(data.data);
+  } else {
+    adoptData(defaultState());   // usuário novo: ainda não existe linha no servidor
+  }
+  return true;
+}
+function showLoadError(){
+  const loader = document.getElementById('app-loader'); if(loader) loader.classList.add('hidden');
+  modalRoot().innerHTML = `
+  <div class="modal-backdrop">
+    <div class="modal confirm">
+      <h3>Não foi possível carregar seus dados</h3>
+      <p>Verifique sua internet e tente de novo. Nada foi alterado nem apagado.</p>
+      <div class="modal-actions">
+        <button class="btn" id="le-out">Sair</button>
+        <button class="btn primary" id="le-retry">Tentar novamente</button>
+      </div>
+    </div>
+  </div>`;
+  $('#le-retry').onclick = ()=>{ closeModal(); const l=document.getElementById('app-loader'); if(l) l.classList.remove('hidden'); bootApp(); };
+  $('#le-out').onclick = ()=>{ closeModal(); supabase.auth.signOut(); };
+}
+
+function saveState(immediate){
+  if(!state || !currentUser) return Promise.resolve();
+  dirty = true;
+  clearTimeout(saveTimer);
+  if(immediate) return flushSave();
+  saveTimer = setTimeout(flushSave, 250);
+  return Promise.resolve();
+}
+async function writeState(clone){
+  try{
+    let res;
+    if(serverStamp){
+      // só grava se ninguém salvou depois de nós (compara o updated_at)
+      res = await supabase.from('app_state').update({ data: clone }).eq('user_id', currentUser.id).eq('updated_at', serverStamp).select('updated_at');
+    } else {
+      res = await supabase.from('app_state').insert({ user_id: currentUser.id, data: clone }).select('updated_at');
+    }
+    if(res.error){
+      if(res.error.code==='23505') return { conflict:true };   // outro aparelho criou a linha antes
+      return { error: res.error };
+    }
+    if(!res.data || res.data.length===0) return { conflict:true };
+    return { ok:true, stamp: res.data[0].updated_at };
+  }catch(e){ return { error:e }; }
+}
+async function flushSave(){
+  if(!state || !currentUser) return;
+  clearTimeout(saveTimer);
+  if(!dirty || conflict) return;
+  if(saving){ pendingAgain = true; return; }
+  const clone = {...state}; delete clone._txnIndex;
+  const json = JSON.stringify(clone);
+  if(json===lastSavedJson){ dirty = false; return true; }   // nada mudou de verdade: não grava
+  saving = true; pendingAgain = false;
+  try{
+    await historyReady;
+    if(lastSavedJson && historyAvailable!==false && syncNow()-lastSnapshotAt > SNAPSHOT_EVERY_MS){
+      await snapshotNow('Automática', JSON.parse(lastSavedJson));   // guarda como estava ANTES desta alteração
+    }
+  }catch(e){}
+  const res = await writeState(clone);
+  saving = false;
+  if(res.ok){
+    serverStamp = res.stamp; lastSavedJson = json; retryCount = 0;
+    clearTimeout(retryTimer); hideSaveBanner();
+    dirty = pendingAgain;
+    if(pendingAgain){ pendingAgain = false; flushSave(); }
+    return true;
+  }
+  if(res.conflict){ conflict = true; showConflictModal(); return false; }
+  retryCount++;
+  showSaveBanner('Não foi possível salvar suas alterações. Elas continuam aqui e o Kivo vai tentar de novo.');
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(flushSave, RETRY_DELAYS[Math.min(retryCount-1, RETRY_DELAYS.length-1)]);
+  return false;
+}
+
+async function reloadFromServer(){
+  const { data, error } = await supabase.from('app_state').select('data, updated_at').eq('user_id', currentUser.id).maybeSingle();
+  if(error || !data) return false;
+  clearTimeout(saveTimer);
+  serverStamp = data.updated_at; lastSavedJson = JSON.stringify(data.data);
+  dirty = false; conflict = false; pendingAgain = false;
+  adoptData(data.data);
+  materializeAll();
+  renderAll();
+  return true;
+}
+async function checkRemote(force){
+  if(!state || !currentUser || conflict || saving) return;
+  if(!force && syncNow()-lastRemoteCheck < 15000) return;
+  if(modalRoot().innerHTML.trim()!=='') return;   // não troca os dados debaixo de um formulário aberto
+  lastRemoteCheck = syncNow();
+  try{
+    const { data, error } = await supabase.from('app_state').select('updated_at').eq('user_id', currentUser.id).maybeSingle();
+    if(error || !data || data.updated_at===serverStamp) return;
+    if(dirty){ conflict = true; showConflictModal(); return; }
+    if(await reloadFromServer()) showToast('Dados atualizados com as alterações feitas em outro aparelho.');
+  }catch(e){}
+}
+function startSyncListeners(){
+  if(syncListenersOn) return;
+  syncListenersOn = true;
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState==='visible') checkRemote();
+    else if(dirty) flushSave();
+  });
+  window.addEventListener('pagehide', ()=>{ if(dirty) flushSave(); });
+  window.addEventListener('focus', ()=>checkRemote());
+  window.addEventListener('online', ()=>{ if(dirty){ retryCount = 0; flushSave(); } checkRemote(true); });
+  window.addEventListener('beforeunload', (e)=>{ if(dirty || saving){ e.preventDefault(); e.returnValue = ''; } });
+}
+
+function downloadJson(obj, filename){
+  const blob = new Blob([JSON.stringify(obj,null,2)],{type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+}
+function showConflictModal(){
+  modalRoot().innerHTML = `
+  <div class="modal-backdrop">
+    <div class="modal confirm">
+      <h3>Seus dados mudaram em outro aparelho</h3>
+      <p>Outro aparelho (ou outra aba) salvou alterações depois que você abriu o Kivo aqui. Para não apagar nada sem querer, o salvamento foi pausado.</p>
+      <div class="modal-actions" style="flex-direction:column;align-items:stretch;gap:8px">
+        <button class="btn primary" id="cf-reload">Carregar a versão mais recente</button>
+        <button class="btn" id="cf-keep">Manter a minha e sobrescrever</button>
+        <button class="btn small" id="cf-download">Baixar uma cópia da minha versão</button>
+      </div>
+      <p class="help-text" style="margin:10px 0 0">Ao sobrescrever, a versão do outro aparelho fica guardada no histórico (se ele estiver ativado).</p>
+    </div>
+  </div>`;
+  $('#cf-download').onclick = ()=>downloadJson(cloneForSave(), 'kivo-minha-versao.json');
+  $('#cf-reload').onclick = async()=>{
+    closeModal();
+    const ok = await reloadFromServer();
+    if(ok) showToast('Dados atualizados com a versão mais recente.');
+    else { showToast('Não foi possível carregar agora. Tente de novo.','error'); showConflictModal(); }
+  };
+  $('#cf-keep').onclick = async()=>{
+    closeModal();
+    const { data, error } = await supabase.from('app_state').select('data, updated_at').eq('user_id', currentUser.id).maybeSingle();
+    if(error){ showToast('Não foi possível confirmar agora. Tente de novo.','error'); showConflictModal(); return; }
+    if(data){
+      await snapshotNow('Versão de outro aparelho (antes de sobrescrever)', data.data);
+      serverStamp = data.updated_at; lastSavedJson = JSON.stringify(data.data);
+    } else { serverStamp = null; lastSavedJson = ''; }
+    conflict = false; dirty = true;
+    await flushSave();
+  };
+}
+
+function ensureEl(id){
+  let e = document.getElementById(id);
+  if(!e){ e = document.createElement('div'); e.id = id; document.body.appendChild(e); }
+  return e;
+}
+function showToast(msg, kind){
+  const root = ensureEl('toasts');
+  const el = document.createElement('div');
+  el.className = 'toast '+(kind||'');
+  el.textContent = msg;
+  root.appendChild(el);
+  setTimeout(()=>el.classList.add('hide'), 4200);
+  setTimeout(()=>el.remove(), 4800);
+}
+function showSaveBanner(msg){
+  const b = ensureEl('save-banner');
+  b.innerHTML = `<span>${escapeHtml(msg)}</span><button class="btn small" id="sb-retry">Tentar agora</button>`;
+  b.classList.add('show');
+  $('#sb-retry').onclick = ()=>{ retryCount = 0; flushSave(); };
+}
+function hideSaveBanner(){
+  const b = document.getElementById('save-banner');
+  if(b) b.classList.remove('show');
+}
+
+/* ---------- histórico de versões ---------- */
+function isMissingTable(err){
+  const m = (err && err.message || '');
+  return !!err && (err.code==='42P01' || err.code==='PGRST205' || (/app_state_history/.test(m) && /does not exist|schema cache|not find/i.test(m)));
+}
+function summarizeData(d){
+  const n = k=>Array.isArray(d && d[k])? d[k].length : 0;
+  return { lancamentos:n('transactions'), contas:n('accounts'), recorrentes:n('incomes')+n('recurring'), parcelamentos:n('installments'), dividas:n('debts') };
+}
+function summaryText(s){
+  s = s || {};
+  return `${s.lancamentos||0} lançamentos · ${s.contas||0} contas · ${s.recorrentes||0} recorrentes · ${s.parcelamentos||0} parcelamentos · ${s.dividas||0} dívidas`;
+}
+function fmtDateTime(iso){
+  const d = new Date(iso), p = n=>String(n).padStart(2,'0');
+  return `${p(d.getDate())}/${p(d.getMonth()+1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function initHistory(){
+  historyReady = (async()=>{
+    try{
+      const { data, error } = await supabase.from('app_state_history').select('created_at').eq('user_id', currentUser.id).order('created_at',{ascending:false}).limit(1);
+      if(error){ historyAvailable = isMissingTable(error)? false : null; return; }
+      historyAvailable = true;
+      lastSnapshotAt = (data && data[0])? new Date(data[0].created_at).getTime() : 0;
+    }catch(e){ historyAvailable = null; }
+  })();
+  return historyReady;
+}
+async function snapshotNow(reason, data){
+  if(historyAvailable===false || !currentUser) return { ok:false, missing:true };
+  try{
+    const { error } = await supabase.from('app_state_history').insert({ user_id: currentUser.id, reason, summary: summarizeData(data), data });
+    if(error){ if(isMissingTable(error)) historyAvailable = false; return { ok:false, error }; }
+    historyAvailable = true; lastSnapshotAt = syncNow();
+    pruneHistory();
+    return { ok:true };
+  }catch(e){ return { ok:false, error:e }; }
+}
+async function pruneHistory(){
+  try{
+    const { data } = await supabase.from('app_state_history').select('id').eq('user_id', currentUser.id).order('created_at',{ascending:false}).range(HISTORY_KEEP, HISTORY_KEEP+500);
+    if(data && data.length) await supabase.from('app_state_history').delete().in('id', data.map(r=>r.id));
+  }catch(e){}
+}
+async function listHistory(){
+  const { data, error } = await supabase.from('app_state_history').select('id, created_at, reason, summary').eq('user_id', currentUser.id).order('created_at',{ascending:false}).limit(HISTORY_KEEP);
+  if(error){ if(isMissingTable(error)) historyAvailable = false; return null; }
+  historyAvailable = true;
+  return data || [];
+}
+async function saveVersionNow(){
+  const r = await snapshotNow('Manual', cloneForSave());
+  showToast(r.ok? 'Versão guardada no histórico.' : 'Não foi possível guardar agora.', r.ok? '' : 'error');
+  return r.ok;
+}
+async function restoreVersion(id){
+  const { data, error } = await supabase.from('app_state_history').select('data, created_at, reason').eq('id', id).eq('user_id', currentUser.id).maybeSingle();
+  if(error || !data){ showToast('Não foi possível abrir essa versão agora.','error'); return false; }
+  await snapshotNow('Antes de restaurar', cloneForSave());   // dá para desfazer a restauração
+  clearTimeout(saveTimer);
+  adoptData(JSON.parse(JSON.stringify(data.data)));
+  dirty = true;
+  materializeAll();
+  renderAll();
+  const ok = await flushSave();
+  if(ok!==false) showToast('Versão restaurada.');
+  return true;
+}
+async function renderHistoryCard(){
+  const box = document.getElementById('history-card');
+  if(!box) return;
+  await historyReady;
+  box.innerHTML = '<p class="help-text" style="margin:0">Carregando…</p>';
+  const rows = await listHistory();
+  if(rows===null){
+    if(historyAvailable===false){
+      box.innerHTML = `<p style="font-size:13.5px;color:var(--ink-soft);margin-top:0">O histórico guarda cópias automáticas dos seus dados (no máximo uma por hora, as últimas ${HISTORY_KEEP}) e deixa você voltar no tempo se algo der errado. Para ativar, crie a tabela do histórico no Supabase, uma única vez:</p>
+        <ol class="help-text" style="margin:0 0 12px 18px;padding:0"><li>Abra o Supabase › SQL Editor › New query</li><li>Clique em "Copiar SQL", cole lá e execute (Run)</li><li>Volte aqui e recarregue a página</li></ol>
+        <button class="btn" id="btn-copy-sql">Copiar SQL</button>`;
+      $('#btn-copy-sql').onclick = async()=>{
+        try{ await navigator.clipboard.writeText(HISTORY_SQL); showToast('SQL copiado. Cole no SQL Editor do Supabase.'); }
+        catch(e){ showToast('Não consegui copiar automaticamente. O SQL está em supabase/schema.sql no projeto.','error'); }
+      };
+    } else {
+      box.innerHTML = '<p class="help-text" style="margin:0">Não foi possível carregar o histórico agora.</p>';
+    }
+    return;
+  }
+  box.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+      <p style="font-size:13.5px;color:var(--ink-soft);margin:0">Cópias automáticas (no máximo uma por hora, as últimas ${HISTORY_KEEP}). Restaurar guarda antes uma cópia do estado atual.</p>
+      <button class="btn small" id="btn-snap-now">Salvar versão agora</button>
+    </div>
+    ${rows.length? `<div class="history-list">${rows.map(r=>`
+      <div class="history-row">
+        <div><strong>${fmtDateTime(r.created_at)}</strong> <span class="badge grey">${escapeHtml(r.reason||'')}</span>
+          <div class="help-text" style="margin:3px 0 0">${escapeHtml(summaryText(r.summary))}</div></div>
+        <button class="btn small" data-restore="${r.id}">Restaurar</button>
+      </div>`).join('')}</div>` : '<p class="help-text" style="margin:0">Ainda não há versões guardadas. A primeira aparece depois da próxima alteração.</p>'}`;
+  $('#btn-snap-now').onclick = async()=>{ await saveVersionNow(); renderHistoryCard(); };
+  $$('#history-card [data-restore]').forEach(b=>b.onclick=()=>confirmModal(
+    'Restaurar esta versão?',
+    'Seus dados atuais serão trocados pelos dessa data. Antes disso o Kivo guarda uma cópia do estado de agora, então dá para desfazer.',
+    ()=>restoreVersion(b.dataset.restore), 'Restaurar'));
+}
+/* ===== SYNC:END ===== */
 function migrateToAccounts(){
   // V1: quem só usava "saldo atual em conta" (um número solto) ganha uma conta de verdade,
   // sem perder o valor que já tinha informado.
@@ -296,19 +637,7 @@ function migrateToAccounts(){
 function rebuildIndex(){
   state._txnIndex = new Set(state.transactions.map(t=>t.genKey).filter(Boolean));
 }
-function saveState(immediate){
-  clearTimeout(saveTimer);
-  const doSave = async()=>{
-    const clone = {...state};
-    delete clone._txnIndex;
-    try{
-      const { error } = await supabase.from('app_state').upsert({ user_id: currentUser.id, data: clone, updated_at: new Date().toISOString() });
-      if(error) console.error('Erro ao salvar', error);
-    }catch(e){ console.error('Erro ao salvar',e); }
-  };
-  if(immediate) return doSave();
-  saveTimer = setTimeout(doSave, 250);
-}
+
 
 
 /* ===================== MATERIALIZATION ===================== */
@@ -1992,6 +2321,8 @@ RENDERERS.configuracoes = function(){
         <input type="file" id="input-import" accept="application/json" style="display:none">
       </div>
     </div>
+    <div class="section-title"><h2>Histórico de versões</h2></div>
+    <div class="card" id="history-card"><p class="help-text" style="margin:0">Carregando…</p></div>
   `;
   wireCurrencyMasks(document.getElementById('settings-form'));
   $('#settings-form').onsubmit=(e)=>{
@@ -2009,6 +2340,7 @@ RENDERERS.configuracoes = function(){
   $$('[data-del-cat]').forEach(b=>b.onclick=()=>confirmModal('Excluir categoria?','Lançamentos existentes manterão o nome da categoria.',()=>{
     state.categories = state.categories.filter(c=>c.id!==b.dataset.delCat); saveState(); RENDERERS.configuracoes();
   }));
+  renderHistoryCard();
   $('#btn-export').onclick=()=>{
     const blob = new Blob([JSON.stringify({...state,_txnIndex:undefined},null,2)],{type:'application/json'});
     const a = document.createElement('a');
@@ -2027,6 +2359,7 @@ RENDERERS.configuracoes = function(){
       catch(err){ confirmModal('Arquivo inválido','Esse arquivo não parece ser um backup válido do Kivo.',()=>{},'Ok'); return; }
       confirmModal('Restaurar backup?','Isso substitui TODOS os seus dados atuais pelos dados desse arquivo. Essa ação não pode ser desfeita.',()=>{
         delete parsed._txnIndex;
+        snapshotNow('Antes de importar backup', cloneForSave());
         state = {...defaultState(), ...parsed};
         rebuildIndex();
         materializeAll();
@@ -2068,6 +2401,7 @@ async function init(){
 
   supabase.auth.onAuthStateChange(async (event, session)=>{
     if(event==='SIGNED_IN' && session){
+      if(state && currentUser && currentUser.id===session.user.id){ currentUser = session.user; return; } // mesmo usuário já carregado: não recarrega por cima das suas alterações
       currentUser = session.user;
       hideAuthScreen();
       document.getElementById('app-loader').classList.remove('hidden');
@@ -2075,19 +2409,23 @@ async function init(){
     } else if(event==='SIGNED_OUT'){
       currentUser = null;
       state = null;
+      resetSyncState();
       document.getElementById('app-root').style.display='none';
       showAuthScreen();
     }
   });
 }
 async function bootApp(){
-  await loadState();
+  try{ await loadState(); }
+  catch(e){ console.error('Erro ao carregar dados:', e); showLoadError(); return; }
+  initHistory();
+  startSyncListeners();
   materializeAll();
   const userBox = document.getElementById('sidebar-user');
   if(userBox) userBox.textContent = currentUser.email;
   $$('.nav-item[data-view]').forEach(b=>b.onclick=()=>switchView(b.dataset.view));
   const logoutBtn = document.getElementById('btn-logout');
-  if(logoutBtn) logoutBtn.onclick = ()=>supabase.auth.signOut();
+  if(logoutBtn) logoutBtn.onclick = async()=>{ try{ if(dirty) await flushSave(); }catch(e){} supabase.auth.signOut(); };
   wireQuickAdd();
   document.getElementById('app-root').style.display='flex';
   switchView('dashboard');

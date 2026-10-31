@@ -47,3 +47,34 @@ drop trigger if exists trg_app_state_updated_at on public.app_state;
 create trigger trg_app_state_updated_at
   before update on public.app_state
   for each row execute function public.set_updated_at();
+
+-- ============================================================
+-- OPCIONAL — Histórico de versões (ative em Configurações > Histórico)
+-- ============================================================
+-- Histórico de versões do Kivo (rode uma única vez no SQL Editor do Supabase).
+-- Só CRIA uma tabela nova: não altera nenhum dado nem a tabela app_state.
+create table if not exists public.app_state_history (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  reason text not null default 'Automática',
+  summary jsonb not null default '{}'::jsonb,
+  data jsonb not null
+);
+
+create index if not exists app_state_history_user_created
+  on public.app_state_history (user_id, created_at desc);
+
+alter table public.app_state_history enable row level security;
+
+drop policy if exists "Usuário lê apenas seu próprio histórico" on public.app_state_history;
+create policy "Usuário lê apenas seu próprio histórico"
+  on public.app_state_history for select using (auth.uid() = user_id);
+
+drop policy if exists "Usuário cria apenas seu próprio histórico" on public.app_state_history;
+create policy "Usuário cria apenas seu próprio histórico"
+  on public.app_state_history for insert with check (auth.uid() = user_id);
+
+drop policy if exists "Usuário apaga apenas seu próprio histórico" on public.app_state_history;
+create policy "Usuário apaga apenas seu próprio histórico"
+  on public.app_state_history for delete using (auth.uid() = user_id);
