@@ -1105,7 +1105,7 @@ function categoryOptions(type){
 const PAYMENT_METHODS = ['Dinheiro','PIX','Débito','Crédito','Transferência','Outro'];
 function paymentOptions(){ return PAYMENT_METHODS.map(v=>({value:v,label:v})); }
 function cardOptions(){ return [{value:'',label:'Nenhum'}].concat(state.cards.map(c=>({value:c.id,label:c.name}))); }
-function accountOptions(){ return state.accounts.map(a=>({value:a.id,label:a.name})); }
+function accountOptions(includeId){ return state.accounts.filter(a=>a.status!=='inativa' || a.id===includeId).map(a=>({value:a.id,label:a.name+(a.status==='inativa'? ' (inativa)' : '')})); }
 
 /* ===================== DASHBOARD ===================== */
 let upcomingWindow = 7;
@@ -1362,7 +1362,7 @@ function openLancModal(t, presetDate, presetType){
       {name:'description',label:'Descrição',type:'text',required:true},
       {row:[{name:'category',label:'Categoria',type:'select',options:state.categories.map(c=>({value:c.name,label:c.name}))},
              {name:'value',label:'Valor',type:'currency',required:true}]},
-      {row:[{name:'accountId',label:'Conta',type:'select',options:accountOptions()},
+      {row:[{name:'accountId',label:'Conta',type:'select',options:accountOptions(t && t.accountId)},
              {name:'toAccountId',label:'Conta destino (transferência)',type:'select',options:accountOptions()}]},
       {row:[{name:'date',label:'Data',type:'date',required:true},
              {name:'paymentMethod',label:'Forma de pagamento',type:'select',options:['Dinheiro','PIX','Débito','Crédito','Transferência','Outro'].map(v=>({value:v,label:v}))}]},
@@ -1376,6 +1376,10 @@ function openLancModal(t, presetDate, presetType){
       if(v.type==='receita'){ v.cardId=''; }
       v.purchaseDate = '';
       v.paidAt = v.status==='pago'? (v.paidAt||'') : '';   // em branco: vale a data do lançamento
+      { // lançar como pago (ou mudar para pago / mudar a data do pagamento) é uma ação sua: soma no saldo
+        const wasPaid = isEdit && t.status==='pago', prevPaidAt = isEdit? (t.paidAt||'') : '';
+        if(v.status==='pago' && (!wasPaid || (v.paidAt && v.paidAt!==prevPaidAt))){ v.forceCount = true; v.preSettled = false; }
+      }
       if(isEdit && t.source!=='manual' && v.date===t.date){ v.month = t.month; } // linha gerada: não mexe no mês da fatura
       if(v.type==='despesa' && v.cardId && (!isEdit || t.source==='manual')){
         const card = state.cards.find(c=>c.id===v.cardId);
@@ -1424,14 +1428,49 @@ function paidNote(t){
   const plan = (t.date && t.date!==t.paidAt)? ' · previsto para '+fmtDate(t.date) : '';
   return `<div class="help-text" style="margin:3px 0 0">${t.type==='receita'? 'Recebido' : 'Pago'} em ${fmtDate(t.paidAt)}${plan}</div>`;
 }
+function accountStartISO(acc){
+  // a partir de quando o saldo inicial vale: tudo que foi pago antes já está embutido nele
+  return acc.startDate || (acc.createdAt? localISODate(acc.createdAt) : '');
+}
 function txCountsForBalance(t){
-  if(!t.date || t.preSettled) return false; // preSettled = parcela já paga antes do Kivo, já embutida no saldo
+  if(!t.date || t.preSettled) return false;   // preSettled = parcela já paga antes do Kivo, já embutida no saldo
+  if(t.forceCount) return true;               // você marcou/lançou como pago: sempre soma, qualquer que seja a data
   const acc = state.accounts.find(a=>a.id===t.accountId);
-  if(acc && acc.createdAt){
-    const sinceDate = new Date(acc.createdAt).toISOString().slice(0,10);
-    if(cashDate(t) < sinceDate) return false; // já estava embutido no saldo inicial da conta quando ela foi criada
-  }
+  const since = acc? accountStartISO(acc) : '';
+  if(since && cashDate(t) < since) return false;   // anterior ao saldo inicial: já estava incluído nele
   return true;
+}
+function excludedRows(acc){
+  // lançamentos que VOCÊ registrou/pagou, mas que ficaram de fora do saldo por terem data anterior ao saldo inicial
+  const since = accountStartISO(acc);
+  if(!since) return [];
+  return state.transactions.filter(t=>{
+    if(t.status!=='pago' || t.accountId!==acc.id || t.preSettled || t.forceCount) return false;
+    if(t.type!=='receita' && t.type!=='despesa') return false;
+    if(!(cashDate(t) < since)) return false;
+    return !!t.paidAt || (t.source==='manual' && !t.genKey && (t.createdAt||0) >= (acc.createdAt||0));
+  });
+}
+function excludedBanner(acc){
+  const rows = excludedRows(acc);
+  if(!rows.length) return '';
+  const net = rows.reduce((s,t)=>s+(t.type==='receita'? 1 : -1)*Number(t.value),0);
+  return `<div class="alert-item" style="margin-top:12px;display:block">
+    <div style="font-weight:700">${rows.length} lançamento(s) pago(s) por você não estão somando</div>
+    <div class="help-text" style="margin:4px 0 8px">A data deles é anterior ao saldo inicial desta conta (${fmtDate(accountStartISO(acc))}), então o Kivo entendeu que já estavam no saldo. Se somarem, o saldo muda ${net>=0? '+' : ''}${fmtCurrency(net)}.</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn small primary" data-force-acc="${acc.id}">Somar ao saldo</button><button class="btn small" data-ignore-acc="${acc.id}">Já estavam no meu saldo</button></div>
+  </div>`;
+}
+function acceptExcludedRows(accId){
+  const acc = state.accounts.find(a=>a.id===accId); if(!acc) return;
+  excludedRows(acc).forEach(t=>{ t.forceCount = true; });
+  saveState(); renderAll();
+  showToast('Pronto: esses lançamentos agora somam ao saldo.');
+}
+function dismissExcludedRows(accId){
+  const acc = state.accounts.find(a=>a.id===accId); if(!acc) return;
+  excludedRows(acc).forEach(t=>{ t.preSettled = true; });
+  saveState(); renderAll();
 }
 function accountBalance(accountId){
   const acc = state.accounts.find(a=>a.id===accountId);
@@ -1582,7 +1621,7 @@ function markTransactionPaid(txId){
     initial:{paidAt:todayISO(), accountId:t.accountId||defaultAccountId(), paymentMethod:t.paymentMethod||'Outro', category:t.category||''},
     fields:[
       {name:'paidAt',label: isIn? 'Recebido em' : 'Pago em', type:'date', required:true},
-      {row:[{name:'accountId',label: isIn? 'Conta que recebeu' : 'Conta de onde saiu', type:'select', options:accountOptions()},
+      {row:[{name:'accountId',label: isIn? 'Conta que recebeu' : 'Conta de onde saiu', type:'select', options:accountOptions(t.accountId)},
              {name:'paymentMethod',label: isIn? 'Forma de recebimento' : 'Forma de pagamento', type:'select', options:paymentOptions()}]},
       ...(catOpts.length? [{name:'category',label:'Categoria',type:'select',options:catOpts}] : [])
     ],
@@ -1590,6 +1629,7 @@ function markTransactionPaid(txId){
     onSubmit(v){
       t.status = 'pago';
       t.paidAt = v.paidAt || todayISO();
+      t.forceCount = true; t.preSettled = false;   // você marcou como pago: soma no saldo sempre
       if(v.accountId) t.accountId = v.accountId; else if(!t.accountId) t.accountId = defaultAccountId();
       if(v.paymentMethod) t.paymentMethod = v.paymentMethod;
       if(v.category) t.category = v.category;
@@ -1614,14 +1654,17 @@ RENDERERS.contas = function(){
     return `<div class="card">
       <div class="stat-label">${escapeHtml(a.name)} ${a.status==='inativa'?'<span class="badge grey">Inativa</span>':''}</div>
       <div class="stat-value ${bal>=0?'pos':'neg'} num">${fmtCurrency(bal)}</div>
-      <div class="stat-foot">${escapeHtml(a.institution||typeLabel(a.type))} · saldo inicial ${fmtCurrency(a.initialBalance)}</div>
+      <div class="stat-foot">${escapeHtml(a.institution||typeLabel(a.type))} · saldo inicial ${fmtCurrency(a.initialBalance)} em ${fmtDate(accountStartISO(a))}</div>
       <div class="stat-foot">${a.lastCheckedAt? 'Conferido com o banco em '+fmtDate(localISODate(a.lastCheckedAt)) : 'Ainda não conferido com o banco'}</div>
+      ${excludedBanner(a)}
       <div style="margin-top:12px"><button class="btn small" data-check-acc="${a.id}">${icon('checkCircle',14)} Conferir saldo</button></div>
       <div style="margin-top:8px"><button class="icon-btn" data-edit-acc="${a.id}">${icon('edit',14)} Editar</button> <button class="icon-btn" data-del-acc="${a.id}">${icon('trash',14)} Excluir</button></div>
     </div>`;
   }
   $('#btn-new-account').onclick=()=>openAccountModal();
   $$('[data-check-acc]').forEach(b=>b.onclick=()=>openReconcileModal(b.dataset.checkAcc));
+  $$('[data-force-acc]').forEach(b=>b.onclick=()=>acceptExcludedRows(b.dataset.forceAcc));
+  $$('[data-ignore-acc]').forEach(b=>b.onclick=()=>dismissExcludedRows(b.dataset.ignoreAcc));
   $$('[data-edit-acc]').forEach(b=>b.onclick=()=>openAccountModal(state.accounts.find(a=>a.id===b.dataset.editAcc)));
   $$('[data-del-acc]').forEach(b=>b.onclick=()=>{
     const id=b.dataset.delAcc;
@@ -1681,13 +1724,14 @@ function openAccountModal(a){
   const isEdit = !!a;
   openFormModal({
     title: isEdit? 'Editar conta':'Nova conta',
-    initial: a || {type:'conta',status:'ativa',initialBalance:0},
+    initial: a? {...a, startDate:accountStartISO(a)} : {type:'conta',status:'ativa',initialBalance:0,startDate:todayISO()},
     fields:[
       {name:'name',label:'Nome',type:'text',required:true},
       {row:[{name:'institution',label:'Instituição (opcional)',type:'text'},
              {name:'type',label:'Tipo',type:'select',options:[{value:'conta',label:'Conta bancária'},{value:'carteira',label:'Carteira'},{value:'poupanca',label:'Poupança'},{value:'digital',label:'Conta digital'},{value:'conjunta',label:'Conta conjunta'},{value:'outro',label:'Outros'}]}]},
       {row:[{name:'initialBalance',label:'Saldo inicial',type:'currency',required:true},
-             {name:'status',label:'Status',type:'select',options:[{value:'ativa',label:'Ativa'},{value:'inativa',label:'Inativa'}]}]}
+             {name:'status',label:'Status',type:'select',options:[{value:'ativa',label:'Ativa'},{value:'inativa',label:'Inativa'}]}]},
+      {name:'startDate',label:'Data do saldo inicial (o que foi pago antes dela já está no saldo)',type:'date'}
     ],
     onSubmit(v){
       if(isEdit){ Object.assign(a,v); } else { state.accounts.push({id:uid(),...v,createdAt:Date.now()}); }
@@ -1783,7 +1827,7 @@ function openPayInvoiceModal(cardId){
     onSubmit(v){
       info.ids.forEach(id=>{
         const t = state.transactions.find(x=>x.id===id);
-        if(t){ t.status = 'pago'; t.paidAt = v.paidAt || todayISO(); t.accountId = v.accountId || t.accountId || defaultAccountId(); }
+        if(t){ t.status = 'pago'; t.paidAt = v.paidAt || todayISO(); t.forceCount = true; t.preSettled = false; t.accountId = v.accountId || t.accountId || defaultAccountId(); }
       });
       saveState(); renderAll();
     }
