@@ -619,7 +619,7 @@ async function renderHistoryCard(){
   $$('#history-card [data-restore]').forEach(b=>b.onclick=()=>confirmModal(
     'Restaurar esta versão?',
     'Seus dados atuais serão trocados pelos dessa data. Antes disso o Kivo guarda uma cópia do estado de agora, então dá para desfazer.',
-    ()=>restoreVersion(b.dataset.restore), 'Restaurar'));
+    ()=>restoreVersion(b.dataset.restore), 'Restaurar', 'primary'));
 }
 /* ===== SYNC:END ===== */
 function migrateToAccounts(){
@@ -669,18 +669,18 @@ function recurringGenerated(r, occ){
   let date = base, month = occ;
   if(card){ const inv = cardInvoiceFor(card, base); date = inv.dueDate; month = inv.invoiceMonth; } // compra no crédito cai na fatura certa
   return {type:'despesa',source:'recurring',sourceId:r.id,occMonth:occ,month,date,category:r.category,description:r.name,value:r.value,
-          paymentMethod: card? 'Crédito' : r.paymentMethod, cardId: card? card.id : null};
+          paymentMethod: card? 'Crédito' : r.paymentMethod, cardId: card? card.id : null, accountId: r.accountId};
 }
 function incomeGenerated(inc, occ){
   const date = occ+'-'+pad(Math.min(parseInt(inc.day,10)||1, daysInMonth(occ)));
-  return {type:'receita',source:'income',sourceId:inc.id,occMonth:occ,month:occ,date,category:inc.category||inc.name,description:inc.name,value:inc.value};
+  return {type:'receita',source:'income',sourceId:inc.id,occMonth:occ,month:occ,date,category:inc.category||inc.name,description:inc.name,value:inc.value,paymentMethod:inc.paymentMethod,accountId:inc.accountId};
 }
 function materializeRecurringAndIncome(){
   const horizon = limitMonth();
   state.incomes.forEach(inc=>{
     if(inc.status!=='ativa') return;
     if(inc.frequency==='unica'){
-      ensureTxn({type:'receita',source:'income',sourceId:inc.id,month:monthKeyOf(inc.startDate),occMonth:monthKeyOf(inc.startDate),category:inc.category||inc.name,description:inc.name,value:inc.value,date:inc.startDate});
+      ensureTxn({type:'receita',source:'income',sourceId:inc.id,month:monthKeyOf(inc.startDate),occMonth:monthKeyOf(inc.startDate),category:inc.category||inc.name,description:inc.name,value:inc.value,date:inc.startDate,paymentMethod:inc.paymentMethod,accountId:inc.accountId});
       return;
     }
     let m = monthKeyOf(inc.startDate);
@@ -808,7 +808,7 @@ function virtualEntriesByDate(iso){
   return virtualEntriesBetween(addDaysToISO(iso,-1), iso);
 }
 function getMonthTransactions(monthKey){
-  let txns = state.transactions.filter(t=>t.month===monthKey);
+  let txns = state.transactions.filter(t=>txMonth(t)===monthKey);
   if(monthKey > limitMonth()) txns = txns.concat(virtualEntriesForMonth(monthKey));
   return txns;
 }
@@ -819,7 +819,7 @@ function monthSummary(monthKey){
   let plannedReceitas=0, realizedReceitas=0, plannedDespesas=0, realizedDespesas=0;
   const byCategory={};
   txns.forEach(t=>{
-    if(t.type==='transferencia') return; // transferência entre contas não é receita nem despesa
+    if(t.type==='transferencia' || t.type==='ajuste') return; // transferência e ajuste de saldo não são receita nem despesa
     const v = Number(t.value)||0;
     if(t.type==='receita'){ plannedReceitas+=v; if(t.status==='pago') realizedReceitas+=v; }
     else { plannedDespesas+=v; if(t.status==='pago') realizedDespesas+=v;
@@ -831,7 +831,7 @@ function monthSummary(monthKey){
     byCategory };
 }
 function firstDataMonth(){
-  const months = state.transactions.map(t=>t.month);
+  const months = state.transactions.map(txMonth);
   if(!months.length) return todayMonthKey();
   return months.sort()[0];
 }
@@ -963,7 +963,7 @@ function upcomingItems(daysAhead){
 /* ===================== MODAL SYSTEM ===================== */
 const modalRoot = ()=>document.getElementById('modal-root');
 function closeModal(){ modalRoot().innerHTML=''; }
-function confirmModal(title,message,onConfirm,confirmLabel){
+function confirmModal(title,message,onConfirm,confirmLabel,confirmClass){
   modalRoot().innerHTML = `
   <div class="modal-backdrop" data-close="1">
     <div class="modal confirm">
@@ -971,7 +971,7 @@ function confirmModal(title,message,onConfirm,confirmLabel){
       <p>${escapeHtml(message)}</p>
       <div class="modal-actions">
         <button class="btn" id="m-cancel">Cancelar</button>
-        <button class="btn danger" id="m-ok">${escapeHtml(confirmLabel||'Excluir')}</button>
+        <button class="btn ${escapeHtml(confirmClass||'danger')}" id="m-ok">${escapeHtml(confirmLabel||'Excluir')}</button>
       </div>
     </div>
   </div>`;
@@ -1102,6 +1102,8 @@ function renderAll(){ renderView(currentView); }
 function categoryOptions(type){
   return state.categories.filter(c=>c.status==='ativa' && (c.type===type)).map(c=>({value:c.name,label:c.name}));
 }
+const PAYMENT_METHODS = ['Dinheiro','PIX','Débito','Crédito','Transferência','Outro'];
+function paymentOptions(){ return PAYMENT_METHODS.map(v=>({value:v,label:v})); }
 function cardOptions(){ return [{value:'',label:'Nenhum'}].concat(state.cards.map(c=>({value:c.id,label:c.name}))); }
 function accountOptions(){ return state.accounts.map(a=>({value:a.id,label:a.name})); }
 
@@ -1283,7 +1285,7 @@ function renderUpcomingList(items, startingBalance){
       <td>${escapeHtml(t.description)}<span class="help-text" style="display:block;margin:0">${escapeHtml(t.category||'')}</span></td>
       <td class="right num" style="color:${t.type==='receita'?'var(--green)':'var(--red)'}">${t.type==='receita'?'+':'-'}${fmtCurrency(t.value)}</td>
       <td class="right num" style="color:${running>=0?'var(--ink)':'var(--red)'}">${fmtCurrency(running)}</td>
-      <td class="right"><button class="btn small" data-mark-paid="${t.id}">${icon('checkCircle',13)} Marcar pago</button></td>
+      <td class="right"><button class="btn small" data-mark-paid="${t.id}">${icon('checkCircle',13)} ${t.type==='receita'? 'Marcar recebido' : 'Marcar pago'}</button></td>
     </tr>`;
   }).join('')}</tbody></table>`;
 }
@@ -1291,9 +1293,9 @@ function renderUpcomingList(items, startingBalance){
 /* ===================== LANÇAMENTOS ===================== */
 let lancFilter = {mes:'todos',tipo:'todos',categoria:'todos',status:'todos',busca:''};
 RENDERERS.lancamentos = function(){
-  const monthsSet = Array.from(new Set(state.transactions.map(t=>t.month))).sort().reverse();
+  const monthsSet = Array.from(new Set(state.transactions.map(txMonth))).sort().reverse();
   let list = state.transactions.slice().sort((a,b)=> b.date.localeCompare(a.date));
-  if(lancFilter.mes!=='todos') list = list.filter(t=>t.month===lancFilter.mes);
+  if(lancFilter.mes!=='todos') list = list.filter(t=>txMonth(t)===lancFilter.mes);
   if(lancFilter.tipo!=='todos') list = list.filter(t=>t.type===lancFilter.tipo);
   if(lancFilter.categoria!=='todos') list = list.filter(t=>t.category===lancFilter.categoria);
   if(lancFilter.status!=='todos') list = list.filter(t=>t.status===lancFilter.status);
@@ -1305,7 +1307,7 @@ RENDERERS.lancamentos = function(){
     <div class="toolbar">
       <input type="text" id="f-busca" placeholder="Buscar por descrição ou categoria..." value="${escapeHtml(lancFilter.busca)}" style="min-width:220px">
       <select id="f-mes"><option value="todos">Todos os meses</option>${monthsSet.map(m=>`<option value="${m}" ${lancFilter.mes===m?'selected':''}>${monthLabel(m)}</option>`).join('')}</select>
-      <select id="f-tipo"><option value="todos">Todos os tipos</option><option value="receita" ${lancFilter.tipo==='receita'?'selected':''}>Receita</option><option value="despesa" ${lancFilter.tipo==='despesa'?'selected':''}>Despesa</option><option value="transferencia" ${lancFilter.tipo==='transferencia'?'selected':''}>Transferência</option></select>
+      <select id="f-tipo"><option value="todos">Todos os tipos</option><option value="receita" ${lancFilter.tipo==='receita'?'selected':''}>Receita</option><option value="despesa" ${lancFilter.tipo==='despesa'?'selected':''}>Despesa</option><option value="transferencia" ${lancFilter.tipo==='transferencia'?'selected':''}>Transferência</option><option value="ajuste" ${lancFilter.tipo==='ajuste'?'selected':''}>Ajuste</option></select>
       <select id="f-cat"><option value="todos">Todas as categorias</option>${state.categories.map(c=>`<option value="${escapeHtml(c.name)}" ${lancFilter.categoria===c.name?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select>
       <select id="f-status"><option value="todos">Todos os status</option><option value="pago" ${lancFilter.status==='pago'?'selected':''}>Pago</option><option value="pendente" ${lancFilter.status==='pendente'?'selected':''}>Pendente</option></select>
     </div>
@@ -1324,8 +1326,8 @@ RENDERERS.lancamentos = function(){
       <td>${typeBadge(t.type)}</td>
       <td class="right num">${fmtCurrency(t.value)}</td>
       <td>${escapeHtml(t.paymentMethod||'—')}</td>
-      <td>${t.status==='pago'?'<span class="badge green">Pago</span>':'<span class="badge gold">Pendente</span>'}</td>
-      <td><button class="icon-btn" data-edit="${t.id}" title="Editar">${icon('edit',15)}</button><button class="icon-btn" data-dup="${t.id}" title="Duplicar">${icon('copy',15)}</button><button class="icon-btn" data-del="${t.id}" title="Excluir">${icon('trash',15)}</button></td>
+      <td>${t.status==='pago'?'<span class="badge green">Pago</span>':'<span class="badge gold">Pendente</span>'}${paidNote(t)}</td>
+      <td>${t.type==='ajuste'? '' : `<button class="icon-btn" data-edit="${t.id}" title="Editar">${icon('edit',15)}</button><button class="icon-btn" data-dup="${t.id}" title="Duplicar">${icon('copy',15)}</button>`}<button class="icon-btn" data-del="${t.id}" title="Excluir">${icon('trash',15)}</button></td>
     </tr>`;
   }
   let searchDebounce;
@@ -1365,6 +1367,7 @@ function openLancModal(t, presetDate, presetType){
       {row:[{name:'date',label:'Data',type:'date',required:true},
              {name:'paymentMethod',label:'Forma de pagamento',type:'select',options:['Dinheiro','PIX','Débito','Crédito','Transferência','Outro'].map(v=>({value:v,label:v}))}]},
       {name:'cardId',label:'Cartão (se for compra no crédito)',type:'select',options:cardOptions()},
+      {name:'paidAt',label:'Pago/recebido em (opcional)',type:'date'},
       {name:'note',label:'Observação',type:'textarea'}
     ],
     onSubmit(v){
@@ -1372,6 +1375,7 @@ function openLancModal(t, presetDate, presetType){
       if(v.type==='transferencia'){ v.category='Transferência'; v.cardId=''; } else { v.toAccountId=''; }
       if(v.type==='receita'){ v.cardId=''; }
       v.purchaseDate = '';
+      v.paidAt = v.status==='pago'? (v.paidAt||'') : '';   // em branco: vale a data do lançamento
       if(isEdit && t.source!=='manual' && v.date===t.date){ v.month = t.month; } // linha gerada: não mexe no mês da fatura
       if(v.type==='despesa' && v.cardId && (!isEdit || t.source==='manual')){
         const card = state.cards.find(c=>c.id===v.cardId);
@@ -1396,6 +1400,9 @@ function openLancModal(t, presetDate, presetType){
     if(cardField) cardField.style.display = isDespesa? '':'none';
   };
   if(typeSelect){ toggleFields(); typeSelect.addEventListener('change', toggleFields); }
+  const statusSelect = document.querySelector('#modal-form [name="status"]');
+  const togglePaid = ()=>{ const f = document.querySelector('#modal-form [name="paidAt"]'); const box = f && f.closest('.field'); if(box) box.style.display = statusSelect.value==='pago'? '' : 'none'; };
+  if(statusSelect){ togglePaid(); statusSelect.addEventListener('change', togglePaid); }
 }
 
 /* ===================== PLANEJAMENTO ===================== */
@@ -1410,12 +1417,19 @@ function dayLabel(iso){
   const d = new Date(iso+'T00:00:00');
   return `${WEEKDAY_NAMES[d.getDay()]}, ${d.getDate()} de ${MONTH_NAMES[d.getMonth()].toLowerCase()} de ${d.getFullYear()}`;
 }
+function cashDate(t){ return (t.status==='pago' && t.paidAt)? t.paidAt : t.date; }   // dia em que o dinheiro realmente mexeu
+function txMonth(t){ return (t.status==='pago' && t.paidAt && !t.cardId)? monthKeyOf(t.paidAt) : t.month; }
+function paidNote(t){
+  if(t.status!=='pago' || !t.paidAt || (t.type!=='receita' && t.type!=='despesa')) return '';
+  const plan = (t.date && t.date!==t.paidAt)? ' · previsto para '+fmtDate(t.date) : '';
+  return `<div class="help-text" style="margin:3px 0 0">${t.type==='receita'? 'Recebido' : 'Pago'} em ${fmtDate(t.paidAt)}${plan}</div>`;
+}
 function txCountsForBalance(t){
   if(!t.date || t.preSettled) return false; // preSettled = parcela já paga antes do Kivo, já embutida no saldo
   const acc = state.accounts.find(a=>a.id===t.accountId);
   if(acc && acc.createdAt){
     const sinceDate = new Date(acc.createdAt).toISOString().slice(0,10);
-    if(t.date < sinceDate) return false; // já estava embutido no saldo inicial da conta quando ela foi criada
+    if(cashDate(t) < sinceDate) return false; // já estava embutido no saldo inicial da conta quando ela foi criada
   }
   return true;
 }
@@ -1427,6 +1441,7 @@ function accountBalance(accountId){
     if(t.status!=='pago' || !txCountsForBalance(t)) return;
     if(t.type==='receita' && t.accountId===accountId) bal += Number(t.value);
     else if(t.type==='despesa' && t.accountId===accountId) bal -= Number(t.value);
+    else if(t.type==='ajuste' && t.accountId===accountId) bal += Number(t.value);   // ajuste de saldo: o valor já tem sinal
     else if(t.type==='transferencia'){
       if(t.accountId===accountId) bal -= Number(t.value);
       if(t.toAccountId===accountId) bal += Number(t.value);
@@ -1439,7 +1454,7 @@ function totalAvailable(){
 }
 function earliestTrackedDate(){
   const acctDates = state.accounts.map(a=>a.createdAt? new Date(a.createdAt).toISOString().slice(0,10) : null).filter(Boolean);
-  const txnDates = state.transactions.map(t=>t.date).filter(Boolean);
+  const txnDates = state.transactions.map(cashDate).filter(Boolean);
   const all = [...acctDates, ...txnDates].sort();
   return all.length? all[0] : todayISO();
 }
@@ -1454,8 +1469,9 @@ function balanceAsOfDate(iso){
     let total = total0;
     state.transactions.forEach(t=>{
       if(t.type==='transferencia' || t.status!=='pago' || !t.date || !txCountsForBalance(t)) return;
-      if(t.date>iso && t.date<=todayIso){
-        total -= t.type==='receita'? Number(t.value) : -Number(t.value);
+      const cd = cashDate(t);
+      if(cd>iso && cd<=todayIso){
+        total -= (t.type==='receita' || t.type==='ajuste')? Number(t.value) : -Number(t.value);
       }
     });
     return total;
@@ -1472,7 +1488,7 @@ function balanceAsOfDate(iso){
   return total;
 }
 RENDERERS.planejamento = function(){
-  const dayTxns = state.transactions.filter(t=>t.date===planDay).concat(virtualEntriesByDate(planDay)).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+  const dayTxns = state.transactions.filter(t=>cashDate(t)===planDay).concat(virtualEntriesByDate(planDay)).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
   const receitasDia = dayTxns.filter(t=>t.type==='receita').reduce((a,t)=>a+Number(t.value),0);
   const despesasDia = dayTxns.filter(t=>t.type==='despesa').reduce((a,t)=>a+Number(t.value),0);
   const saldo = balanceAsOfDate(planDay);
@@ -1508,8 +1524,8 @@ RENDERERS.planejamento = function(){
         <td>${escapeHtml(t.category||'—')}</td>
         <td>${typeBadge(t.type)}</td>
         <td class="right num">${fmtCurrency(t.value)}</td>
-        <td>${t.virtual? '<span class="badge grey" title="Previsão da recorrência — vira lançamento uns 3 meses antes da data">Previsto</span>' : (t.status==='pago'?'<span class="badge green">Pago</span>':'<span class="badge gold">Pendente</span>')}</td>
-        <td>${t.virtual? `<button class="icon-btn" data-edit-src="${t.source}" data-src-id="${t.sourceId}" title="Editar a recorrência">${icon('edit',15)}</button>` : `<button class="icon-btn" data-edit-day="${t.id}" title="Editar">${icon('edit',15)}</button>`}</td>
+        <td>${t.virtual? '<span class="badge grey" title="Previsão da recorrência — vira lançamento uns 3 meses antes da data">Previsto</span>' : (t.status==='pago'?'<span class="badge green">Pago</span>':'<span class="badge gold">Pendente</span>')+paidNote(t)}</td>
+        <td>${t.type==='ajuste'? '' : t.virtual? `<button class="icon-btn" data-edit-src="${t.source}" data-src-id="${t.sourceId}" title="Editar a recorrência">${icon('edit',15)}</button>` : `<button class="icon-btn" data-edit-day="${t.id}" title="Editar">${icon('edit',15)}</button>`}</td>
       </tr>`).join('') : emptyRow(6,'calendar','Nada nesse dia','Nenhum lançamento registrado para essa data.')}</tbody>
     </table></div>
 
@@ -1551,15 +1567,36 @@ RENDERERS.planejamento = function(){
 function typeBadge(type){
   if(type==='receita') return '<span class="badge green">Receita</span>';
   if(type==='transferencia') return '<span class="badge gold">Transferência</span>';
+  if(type==='ajuste') return '<span class="badge grey">Ajuste</span>';
   return '<span class="badge rust">Despesa</span>';
 }
 function markTransactionPaid(txId){
-  const tx = state.transactions.find(x=>x.id===txId);
-  if(!tx || tx.status==='pago') return;
-  tx.status = 'pago';
-  if(!tx.accountId) tx.accountId = defaultAccountId(); // garante que o saldo da conta reflita esse pagamento
-  saveState();
-  renderAll();
+  const t = state.transactions.find(x=>x.id===txId);
+  if(!t || t.status==='pago') return;
+  const isIn = t.type==='receita';
+  const catType = (t.type==='receita' || t.type==='despesa')? t.type : null;
+  let catOpts = catType? categoryOptions(catType) : [];
+  if(catType && t.category && !catOpts.some(o=>o.value===t.category)) catOpts = [{value:t.category,label:t.category}].concat(catOpts);
+  openFormModal({
+    title: isIn? 'Marcar como recebido' : 'Marcar como pago',
+    initial:{paidAt:todayISO(), accountId:t.accountId||defaultAccountId(), paymentMethod:t.paymentMethod||'Outro', category:t.category||''},
+    fields:[
+      {name:'paidAt',label: isIn? 'Recebido em' : 'Pago em', type:'date', required:true},
+      {row:[{name:'accountId',label: isIn? 'Conta que recebeu' : 'Conta de onde saiu', type:'select', options:accountOptions()},
+             {name:'paymentMethod',label: isIn? 'Forma de recebimento' : 'Forma de pagamento', type:'select', options:paymentOptions()}]},
+      ...(catOpts.length? [{name:'category',label:'Categoria',type:'select',options:catOpts}] : [])
+    ],
+    submitLabel: isIn? 'Marcar como recebido' : 'Marcar como pago',
+    onSubmit(v){
+      t.status = 'pago';
+      t.paidAt = v.paidAt || todayISO();
+      if(v.accountId) t.accountId = v.accountId; else if(!t.accountId) t.accountId = defaultAccountId();
+      if(v.paymentMethod) t.paymentMethod = v.paymentMethod;
+      if(v.category) t.category = v.category;
+      saveState(); renderAll();
+      showToast(isIn? 'Recebimento registrado.' : 'Pagamento registrado.');
+    }
+  });
 }
 
 /* ===================== CARTÃO ===================== */
@@ -1578,10 +1615,13 @@ RENDERERS.contas = function(){
       <div class="stat-label">${escapeHtml(a.name)} ${a.status==='inativa'?'<span class="badge grey">Inativa</span>':''}</div>
       <div class="stat-value ${bal>=0?'pos':'neg'} num">${fmtCurrency(bal)}</div>
       <div class="stat-foot">${escapeHtml(a.institution||typeLabel(a.type))} · saldo inicial ${fmtCurrency(a.initialBalance)}</div>
-      <div style="margin-top:10px"><button class="icon-btn" data-edit-acc="${a.id}">${icon('edit',14)} Editar</button> <button class="icon-btn" data-del-acc="${a.id}">${icon('trash',14)} Excluir</button></div>
+      <div class="stat-foot">${a.lastCheckedAt? 'Conferido com o banco em '+fmtDate(localISODate(a.lastCheckedAt)) : 'Ainda não conferido com o banco'}</div>
+      <div style="margin-top:12px"><button class="btn small" data-check-acc="${a.id}">${icon('checkCircle',14)} Conferir saldo</button></div>
+      <div style="margin-top:8px"><button class="icon-btn" data-edit-acc="${a.id}">${icon('edit',14)} Editar</button> <button class="icon-btn" data-del-acc="${a.id}">${icon('trash',14)} Excluir</button></div>
     </div>`;
   }
   $('#btn-new-account').onclick=()=>openAccountModal();
+  $$('[data-check-acc]').forEach(b=>b.onclick=()=>openReconcileModal(b.dataset.checkAcc));
   $$('[data-edit-acc]').forEach(b=>b.onclick=()=>openAccountModal(state.accounts.find(a=>a.id===b.dataset.editAcc)));
   $$('[data-del-acc]').forEach(b=>b.onclick=()=>{
     const id=b.dataset.delAcc;
@@ -1594,6 +1634,48 @@ RENDERERS.contas = function(){
 };
 function typeLabel(type){
   return {conta:'Conta bancária',carteira:'Carteira',poupanca:'Poupança',digital:'Conta digital',conjunta:'Conta conjunta',outro:'Outros'}[type]||'Conta';
+}
+function localISODate(ms){
+  const d = new Date(ms), p = n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+}
+function openReconcileModal(accountId){
+  const acc = state.accounts.find(a=>a.id===accountId);
+  if(!acc) return;
+  const calc = Math.round(accountBalance(accountId)*100)/100;
+  openFormModal({
+    title:`Conferir saldo · ${acc.name}`,
+    initial:{real:Math.abs(calc), negative:calc<0},
+    fields:[
+      {name:'real',label:`Quanto aparece no banco agora? (o Kivo calcula ${fmtCurrency(calc)})`,type:'currency',required:true},
+      {name:'negative',label:'O saldo está negativo (cheque especial)',type:'checkbox'}
+    ],
+    submitLabel:'Conferir',
+    onSubmit(v){
+      const calcNow = Math.round(accountBalance(accountId)*100)/100;
+      const real = Math.round((v.negative? -v.real : v.real)*100)/100;
+      const diff = Math.round((real-calcNow)*100)/100;
+      if(Math.abs(diff)<0.005){
+        acc.lastCheckedAt = Date.now();
+        saveState(); renderAll();
+        showToast('O saldo confere com o do banco.');
+        return;
+      }
+      const signed = (diff>0? '+' : '')+fmtCurrency(diff);
+      confirmModal(`Registrar ajuste de ${signed}?`,
+        `O Kivo calcula ${fmtCurrency(calcNow)} e você informou ${fmtCurrency(real)}. Vai ser criado um lançamento "Ajuste de saldo" de ${signed}, que mexe só no saldo desta conta e não conta como receita nem despesa. Se errar, é só excluir esse lançamento.`,
+        ()=>{
+          const today = todayISO();
+          state.transactions.push({id:uid(), type:'ajuste', source:'manual', sourceId:null, genKey:null, installmentIndex:null, preSettled:false,
+            category:'Ajuste de saldo', description:'Ajuste de saldo', value:diff, date:today, month:monthKeyOf(today),
+            paymentMethod:'Outro', cardId:null, accountId, status:'pago',
+            note:`Conferência: banco ${fmtCurrency(real)}, Kivo ${fmtCurrency(calcNow)}`, createdAt:Date.now()});
+          acc.lastCheckedAt = Date.now();
+          saveState(); renderAll();
+          showToast('Saldo acertado.');
+        }, 'Registrar ajuste', 'primary');
+    }
+  });
 }
 function openAccountModal(a){
   const isEdit = !!a;
@@ -1694,13 +1776,14 @@ function openPayInvoiceModal(cardId){
   if(!card || !info) return;
   openFormModal({
     title:`Pagar fatura ${card.name} · ${fmtCurrency(info.total)}`,
-    initial:{accountId:defaultAccountId()},
-    fields:[{name:'accountId',label:`Conta de onde saiu o pagamento · vence ${fmtDate(info.dueDate)} · ${info.count} lançamento(s)`,type:'select',options:accountOptions()}],
+    initial:{accountId:defaultAccountId(), paidAt:todayISO()},
+    fields:[{name:'paidAt',label:'Pago em',type:'date',required:true},
+            {name:'accountId',label:`Conta de onde saiu o pagamento · vence ${fmtDate(info.dueDate)} · ${info.count} lançamento(s)`,type:'select',options:accountOptions()}],
     submitLabel:'Marcar como paga',
     onSubmit(v){
       info.ids.forEach(id=>{
         const t = state.transactions.find(x=>x.id===id);
-        if(t){ t.status = 'pago'; t.accountId = v.accountId || t.accountId || defaultAccountId(); }
+        if(t){ t.status = 'pago'; t.paidAt = v.paidAt || todayISO(); t.accountId = v.accountId || t.accountId || defaultAccountId(); }
       });
       saveState(); renderAll();
     }
@@ -1920,7 +2003,7 @@ function openIncomeModal(inc){
   const isEdit=!!inc;
   openFormModal({
     title:isEdit?'Editar receita':'Nova receita',
-    initial: inc||{type:'fixa',frequency:'mensal',day:5,startDate:todayISO(),status:'ativa',category:'Salário'},
+    initial: inc? {accountId:defaultAccountId(), paymentMethod:'PIX', ...inc} : {type:'fixa',frequency:'mensal',day:5,startDate:todayISO(),status:'ativa',category:'Salário',accountId:defaultAccountId(),paymentMethod:'PIX'},
     fields:[
       {name:'name',label:'Nome',type:'text',required:true},
       {row:[{name:'type',label:'Tipo',type:'select',options:[{value:'fixa',label:'Fixa'},{value:'variavel',label:'Variável'},{value:'temporaria',label:'Temporária'}]},
@@ -1928,6 +2011,8 @@ function openIncomeModal(inc){
       {row:[{name:'value',label:'Valor',type:'currency',required:true},
              {name:'frequency',label:'Recorrência',type:'select',options:[{value:'mensal',label:'Mensal'},{value:'unica',label:'Única'}]}]},
       {row:[{name:'startDate',label:'Data de recebimento',type:'date',required:true},{name:'day',label:'Dia do mês',type:'number'}]},
+      {row:[{name:'accountId',label:'Conta que recebe',type:'select',options:accountOptions()},
+             {name:'paymentMethod',label:'Forma de recebimento',type:'select',options:paymentOptions()}]},
       {name:'endDate',label:'Data final (opcional)',type:'date'},
       {name:'status',label:'Status',type:'select',options:[{value:'ativa',label:'Ativa'},{value:'inativa',label:'Inativa'}]}
     ],
@@ -2001,7 +2086,7 @@ function openRecModal(r){
   const isEdit=!!r;
   openFormModal({
     title:isEdit?'Editar recorrente':'Nova despesa recorrente',
-    initial: r||{frequency:'mensal',day:5,startDate:todayISO(),status:'ativa',paymentMethod:'PIX',isSubscription:false},
+    initial: r? {accountId:defaultAccountId(), ...r} : {frequency:'mensal',day:5,startDate:todayISO(),status:'ativa',paymentMethod:'PIX',isSubscription:false,accountId:defaultAccountId()},
     fields:[
       {name:'name',label:'Nome',type:'text',required:true},
       {row:[{name:'category',label:'Categoria',type:'select',options:categoryOptions('despesa')},
@@ -2009,6 +2094,7 @@ function openRecModal(r){
       {row:[{name:'day',label:'Dia do mês',type:'number'},{name:'startDate',label:'Início',type:'date',required:true}]},
       {name:'paymentMethod',label:'Forma de pagamento',type:'select',options:['Dinheiro','PIX','Débito','Crédito','Transferência','Outro'].map(v=>({value:v,label:v}))},
       {name:'cardId',label:'Cartão (se for compra no crédito)',type:'select',options:cardOptions()},
+      {name:'accountId',label:'Conta de onde sai',type:'select',options:accountOptions()},
       {name:'isSubscription',label:'É uma assinatura',type:'checkbox'},
       {name:'status',label:'Status',type:'select',options:[{value:'ativa',label:'Ativa'},{value:'inativa',label:'Inativa'}]}
     ],
