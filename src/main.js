@@ -814,8 +814,7 @@ function getMonthTransactions(monthKey){
 }
 
 /* ===================== CALCULATIONS ===================== */
-function monthSummary(monthKey){
-  const txns = getMonthTransactions(monthKey);
+function summarize(txns){
   let plannedReceitas=0, realizedReceitas=0, plannedDespesas=0, realizedDespesas=0;
   const byCategory={};
   txns.forEach(t=>{
@@ -830,6 +829,14 @@ function monthSummary(monthKey){
     saldoPlanejado: plannedReceitas-plannedDespesas, saldoRealizado: realizedReceitas-realizedDespesas,
     byCategory };
 }
+function monthSummary(monthKey){ return summarize(getMonthTransactions(monthKey)); }
+function periodSummary(p){
+  // fluxo de caixa entre duas datas: vale o dia em que o dinheiro mexe (recebido/pago, ou a data prevista) + previsão das recorrentes
+  const txns = state.transactions.filter(t=>{ const d = cashDate(t); return d && d>=p.from && d<=p.to; })
+    .concat(virtualEntriesBetween(addDaysToISO(p.from,-1), p.to));
+  return summarize(txns);
+}
+function summaryFor(x){ return typeof x==='string'? monthSummary(x) : periodSummary(x); }
 function firstDataMonth(){
   const months = state.transactions.map(txMonth);
   if(!months.length) return todayMonthKey();
@@ -846,7 +853,7 @@ function accumulatedBalance(uptoMonthKey){
   return total;
 }
 function breakeven(monthKey){
-  const s = monthSummary(monthKey);
+  const s = summaryFor(monthKey);
   const margem = s.plannedReceitas - s.plannedDespesas;
   const pct = s.plannedReceitas>0 ? (s.plannedDespesas/s.plannedReceitas*100) : (s.plannedDespesas>0?999:0);
   let status='verde';
@@ -870,7 +877,7 @@ function goalDone(g){ return Number(g.currentValue)>=Number(g.targetValue); }
 function categoryEssential(name){ const c=state.categories.find(c=>c.name===name); return c? c.essential : false; }
 
 function paretoData(monthKey){
-  const s = monthSummary(monthKey);
+  const s = summaryFor(monthKey);
   const rows = Object.entries(s.byCategory).map(([cat,val])=>({cat,val})).sort((a,b)=>b.val-a.val);
   const total = rows.reduce((a,r)=>a+r.val,0);
   let cum=0;
@@ -2207,12 +2214,66 @@ function openGoalModal(g){
 let reportSubtab = 'resumo';
 let compMonthA = todayMonthKey();
 let compMonthB = addMonthsToKey(todayMonthKey(),-1);
+let reportMode = 'mes';          // 'mes' | 'ciclo' | '30d' | 'ano' | 'custom'
+let reportCustom = {from:'', to:''};
+let reportCycleRef = null;
+const PERIOD_SUBTABS = ['resumo','graficos','pareto','equilibrio'];
+function rangeLabel(from,to){ return fmtDate(from)+' a '+fmtDate(to); }
+function cycleFor(refISO, startDay){
+  // o "mês" que começa no dia escolhido (ex.: dia 20 → de 20/09 a 19/10)
+  const sd = Math.min(Math.max(parseInt(startDay,10)||1,1),28);
+  const [y,m,d] = refISO.split('-').map(Number);
+  const ym = `${y}-${pad(m)}`;
+  const fromMonth = d>=sd? ym : addMonthsToKey(ym,-1);
+  const from = fromMonth+'-'+pad(sd);
+  const to = sd===1? fromMonth+'-'+pad(daysInMonth(fromMonth)) : addMonthsToKey(fromMonth,1)+'-'+pad(sd-1);
+  return {from,to};
+}
+function reportPeriod(){
+  const today = todayISO();
+  if(reportMode==='ciclo'){ const c = cycleFor(reportCycleRef||today, state.settings.primeiroDiaMes); return {...c, label:rangeLabel(c.from,c.to)}; }
+  if(reportMode==='30d'){ const from = addDaysToISO(today,-29); return {from, to:today, label:'Últimos 30 dias · '+rangeLabel(from,today)}; }
+  if(reportMode==='ano'){ const y = today.slice(0,4); return {from:y+'-01-01', to:y+'-12-31', label:'Ano de '+y}; }
+  if(reportMode==='custom'){
+    let {from,to} = reportCustom;
+    if(!from || !to){ from = addDaysToISO(today,-29); to = today; }
+    if(from>to){ const x=from; from=to; to=x; }
+    return {from, to, label:rangeLabel(from,to)};
+  }
+  return {from:reportMonth+'-01', to:reportMonth+'-'+pad(daysInMonth(reportMonth)), label:monthLabel(reportMonth)};
+}
+function setReportMode(mode){
+  const before = reportPeriod();
+  reportMode = mode;
+  if(mode==='ciclo') reportCycleRef = (reportMonth===todayMonthKey())? todayISO() : reportMonth+'-15';
+  if(mode==='custom' && (!reportCustom.from || !reportCustom.to)) reportCustom = {from:before.from, to:before.to};
+}
+function shiftReportPeriod(dir){
+  if(reportMode==='mes') reportMonth = addMonthsToKey(reportMonth, dir);
+  else if(reportMode==='ciclo'){ const p = reportPeriod(); reportCycleRef = dir<0? addDaysToISO(p.from,-1) : addDaysToISO(p.to,1); }
+}
+function periodNavHtml(per){
+  const nav = reportMode==='mes' || reportMode==='ciclo';
+  return `<div class="month-nav">${nav? `<button class="btn" id="rep-prev">${icon('chevronLeft',16)}</button>` : ''}<div class="month-label">${escapeHtml(per.label)}</div>${nav? `<button class="btn" id="rep-next">${icon('chevronRight',16)}</button>` : ''}</div>`;
+}
+function periodBarHtml(){
+  const sd = parseInt(state.settings.primeiroDiaMes,10)||1;
+  const modes = [['mes','Mês'],['ciclo',`Ciclo (dia ${sd})`],['30d','Últimos 30 dias'],['ano','Este ano'],['custom','Personalizado']];
+  const per = reportPeriod();
+  return `<div class="period-bar">
+    ${modes.map(([m,l])=>`<button class="period-btn ${m===reportMode?'active':''}" data-pmode="${m}">${escapeHtml(l)}</button>`).join('')}
+    ${reportMode==='custom'? `<span class="period-range"><label>De <input type="date" id="rep-from" value="${per.from}"></label><label>Até <input type="date" id="rep-to" value="${per.to}"></label></span>` : ''}
+  </div>
+  ${reportMode==='ciclo' && sd===1? `<div class="help-text" style="margin:-6px 0 14px">Seu ciclo começa no dia 1. Para usar o dia em que o seu mês realmente começa, ajuste "Primeiro dia do seu mês" em Configurações.</div>` : ''}`;
+}
 RENDERERS.relatorios = function(){
-  const showMonthNav = reportSubtab!=='comparativo';
+  const usesPeriod = PERIOD_SUBTABS.includes(reportSubtab);
+  const per = reportPeriod();
   $('#view-relatorios').innerHTML = `
     <div class="view-head"><div><h1>Relatórios</h1><div class="view-sub">Pareto 80/20, ponto de equilíbrio e projeção de 12 meses</div></div>
-      ${showMonthNav?`<div class="month-nav"><button class="btn" id="rep-prev">${icon('chevronLeft',16)}</button><div class="month-label">${monthLabel(reportMonth)}</div><button class="btn" id="rep-next">${icon('chevronRight',16)}</button></div>`:''}
+      ${usesPeriod? periodNavHtml(per) : ''}
     </div>
+    ${usesPeriod? periodBarHtml() : ''}
     <div class="subtabs">
       <button class="subtab" data-sub="resumo">Resumo</button>
       <button class="subtab" data-sub="comparativo">Comparativo mensal</button>
@@ -2225,9 +2286,15 @@ RENDERERS.relatorios = function(){
     <div id="report-body"></div>
   `;
   $$('.subtab').forEach(b=>{ b.classList.toggle('active',b.dataset.sub===reportSubtab); b.onclick=()=>{reportSubtab=b.dataset.sub; RENDERERS.relatorios();}; });
-  if(showMonthNav){
-    $('#rep-prev').onclick=()=>{reportMonth=addMonthsToKey(reportMonth,-1);RENDERERS.relatorios();};
-    $('#rep-next').onclick=()=>{reportMonth=addMonthsToKey(reportMonth,1);RENDERERS.relatorios();};
+  if(usesPeriod){
+    $$('.period-btn').forEach(b=>b.onclick=()=>{ setReportMode(b.dataset.pmode); RENDERERS.relatorios(); });
+    const prev = $('#rep-prev'), next = $('#rep-next');
+    if(prev) prev.onclick=()=>{ shiftReportPeriod(-1); RENDERERS.relatorios(); };
+    if(next) next.onclick=()=>{ shiftReportPeriod(1); RENDERERS.relatorios(); };
+    const f = $('#rep-from'), t = $('#rep-to');
+    const applyCustom = ()=>{ if(f.value && t.value){ reportCustom = {from:f.value, to:t.value}; RENDERERS.relatorios(); } };
+    if(f) f.onchange = applyCustom;
+    if(t) t.onchange = applyCustom;
   }
   const body = $('#report-body');
   if(reportSubtab==='resumo') body.innerHTML = renderResumo();
@@ -2337,7 +2404,7 @@ function wireComparativo(){
 }
 function renderGraficos(){
   return `
-    <div class="section-title" style="margin-top:0"><h2>Despesas por categoria — ${monthLabel(reportMonth)}</h2></div>
+    <div class="section-title" style="margin-top:0"><h2>Despesas por categoria — ${escapeHtml(reportPeriod().label)}</h2></div>
     <div class="card"><div class="chart-box"><canvas id="chart-report-category"></canvas></div></div>
     <div class="help-text" style="margin-top:8px">Barras amarelas = categorias essenciais · barras verdes = demais categorias.</div>
 
@@ -2346,22 +2413,24 @@ function renderGraficos(){
   `;
 }
 function wireGraficos(){
-  categoryBarChart('chart-report-category', reportMonth);
+  categoryBarChart('chart-report-category', reportPeriod());
   balanceEvolutionChart('chart-report-balance', 6, 6);
 }
 function renderResumo(){
-  const s = monthSummary(reportMonth);
+  const per = reportPeriod();
+  const s = periodSummary(per);
   const maiorCat = Object.entries(s.byCategory).sort((a,b)=>b[1]-a[1])[0];
   return `<div class="grid grid-4">
-    <div class="card"><div class="stat-label">Receitas</div><div class="stat-value pos num">${fmtCurrency(s.plannedReceitas)}</div></div>
-    <div class="card"><div class="stat-label">Despesas</div><div class="stat-value neg num">${fmtCurrency(s.plannedDespesas)}</div></div>
-    <div class="card"><div class="stat-label">Saldo</div><div class="stat-value ${s.saldoPlanejado>=0?'pos':'neg'} num">${fmtCurrency(s.saldoPlanejado)}</div></div>
+    <div class="card"><div class="stat-label">Receitas</div><div class="stat-value pos num">${fmtCurrency(s.plannedReceitas)}</div><div class="stat-foot">Já recebido: ${fmtCurrency(s.realizedReceitas)}</div></div>
+    <div class="card"><div class="stat-label">Despesas</div><div class="stat-value neg num">${fmtCurrency(s.plannedDespesas)}</div><div class="stat-foot">Já pago: ${fmtCurrency(s.realizedDespesas)}</div></div>
+    <div class="card"><div class="stat-label">Saldo</div><div class="stat-value ${s.saldoPlanejado>=0?'pos':'neg'} num">${fmtCurrency(s.saldoPlanejado)}</div><div class="stat-foot">Realizado: ${fmtCurrency(s.saldoRealizado)}</div></div>
     <div class="card"><div class="stat-label">Maior categoria</div><div class="stat-value num" style="font-size:18px">${maiorCat?escapeHtml(maiorCat[0]):'—'}</div><div class="stat-foot">${maiorCat?fmtCurrency(maiorCat[1]):''}</div></div>
-  </div>`;
+  </div>
+  <div class="help-text" style="margin-top:10px">Período: ${escapeHtml(per.label)} · valores pela data em que o dinheiro entra ou sai (compras no cartão, pelo vencimento da fatura).</div>`;
 }
 function renderPareto(){
-  const {rows,total} = paretoData(reportMonth);
-  if(!rows.length) return '<div class="card">Sem despesas registradas neste mês para análise.</div>';
+  const {rows,total} = paretoData(reportPeriod());
+  if(!rows.length) return '<div class="card">Sem despesas registradas neste período para análise.</div>';
   return `<div class="card">
     <p style="font-size:13.5px;color:var(--ink-soft);margin-top:0">Categorias ordenadas da maior para a menor. As destacadas em dourado concentram cerca de 80% dos seus gastos — não significa que sejam dispensáveis.</p>
     ${rows.map(r=>`<div class="pareto-bar-row">
@@ -2374,7 +2443,7 @@ function renderPareto(){
   </div>`;
 }
 function renderEquilibrio(){
-  const be = breakeven(reportMonth);
+  const be = breakeven(reportPeriod());
   const color = be.status==='verde'?'green':be.status==='amarelo'?'gold':'rust';
   return `<div class="grid grid-2">
     <div class="card"><div class="stat-label">Receita prevista</div><div class="stat-value pos num">${fmtCurrency(be.receitaPrevista)}</div></div>
@@ -2427,7 +2496,7 @@ RENDERERS.configuracoes = function(){
             <div class="field"><label>Salário padrão</label><div class="currency-input"><span class="prefix">R$</span><input type="text" inputmode="decimal" class="currency-mask" name="salarioPadrao" value="${formatCurrencyDigits(st.salarioPadrao||0)}"></div></div>
             <div class="field"><label>Meta de economia mensal</label><div class="currency-input"><span class="prefix">R$</span><input type="text" inputmode="decimal" class="currency-mask" name="metaEconomiaMensal" value="${formatCurrencyDigits(st.metaEconomiaMensal||0)}"></div></div>
           </div>
-          <div class="field"><label>Primeiro dia do mês</label><input type="number" min="1" max="28" name="primeiroDiaMes" value="${st.primeiroDiaMes||1}"></div>
+          <div class="field"><label>Primeiro dia do seu mês (ciclo dos Relatórios)</label><input type="number" min="1" max="28" name="primeiroDiaMes" value="${st.primeiroDiaMes||1}"></div>
           <div class="help-text">Saldo agora é calculado automaticamente por conta — gerencie em <strong>Contas</strong>, no menu.</div>
           <button class="btn primary" type="submit">Salvar preferências</button>
         </form>
