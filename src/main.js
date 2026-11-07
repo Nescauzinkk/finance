@@ -1388,13 +1388,26 @@ function openLancModal(t, presetDate, presetType){
         if(v.status==='pago' && (!wasPaid || (v.paidAt && v.paidAt!==prevPaidAt))){ v.forceCount = true; v.preSettled = false; }
       }
       if(isEdit && t.source!=='manual' && v.date===t.date){ v.month = t.month; } // linha gerada: não mexe no mês da fatura
+      let shiftedInvoice = null;
       if(v.type==='despesa' && v.cardId && (!isEdit || t.source==='manual')){
         const card = state.cards.find(c=>c.id===v.cardId);
-        if(card){ const inv = cardInvoiceFor(card, v.date); v.purchaseDate = v.date; v.date = inv.dueDate; v.month = inv.invoiceMonth; v.paymentMethod = 'Crédito'; }
+        if(card){
+          const unchanged = isEdit && v.cardId===t.cardId && v.date===(t.purchaseDate||t.date);   // não mexeu na compra nem no cartão
+          if(unchanged && t.purchaseDate){
+            // já estava numa fatura: editar outra coisa (nome, valor…) não troca de fatura
+            v.purchaseDate = t.purchaseDate; v.date = t.date; v.month = t.month; v.paymentMethod = 'Crédito';
+          } else {
+            const inv = cardInvoiceFor(card, v.date);
+            const openMonth = unchanged? inv.invoiceMonth : openInvoiceMonthFrom(card, inv.invoiceMonth);   // fatura fechada: vai para a próxima aberta
+            v.purchaseDate = v.date; v.month = openMonth; v.date = invoiceDueDate(card, openMonth); v.paymentMethod = 'Crédito';
+            if(openMonth!==inv.invoiceMonth) shiftedInvoice = {from:inv.dueDate, to:v.date};
+          }
+        }
       }
       if(isEdit){ Object.assign(t,v); }
       else { state.transactions.push({id:uid(),source:'manual',sourceId:null,createdAt:Date.now(),...v}); }
       saveState(); renderAll();
+      if(shiftedInvoice) showToast(`A fatura de ${monthLabel(shiftedInvoice.from.slice(0,7))} já está fechada: este lançamento foi para a de ${monthLabel(shiftedInvoice.to.slice(0,7))}.`);
     },
     onDelete: isEdit? ()=>{ confirmModal('Excluir lançamento?','Essa ação não pode ser desfeita.',()=>{ state.transactions=state.transactions.filter(x=>x.id!==t.id); saveState(); closeModal(); renderAll(); }); } : null
   });
@@ -1802,12 +1815,14 @@ function openPurchaseModal(){
     onSubmit(v){
       const count = Math.max(1,parseInt(v.count));
       const card = state.cards.find(c=>c.id===v.cardId);
-      const startMonth = firstInvoiceMonth(card, v.purchaseDate);
+      const naturalMonth = firstInvoiceMonth(card, v.purchaseDate);
+      const startMonth = openInvoiceMonthFrom(card, naturalMonth);   // fatura já fechada por você: vai para a próxima aberta
       const inst = {id:uid(),name:v.name,category:v.category,totalValue:v.totalValue,installmentValue:Math.round(v.totalValue/count*100)/100,count,startMonth,cardId:v.cardId,status:'ativo',note:''};
       const raw = String(v.alreadyPaid==null? '' : v.alreadyPaid).trim();
       inst.alreadyPaid = raw===''? autoPaidCountInst(inst) : Math.max(0, Math.min(parseInt(raw,10)||0, count));
       state.installments.push(inst);
       materializeAll(); renderAll();
+      if(startMonth!==naturalMonth && card) showToast(`A fatura de ${monthLabel(invoiceDueDate(card,naturalMonth).slice(0,7))} já está fechada: a compra foi para a de ${monthLabel(invoiceDueDate(card,startMonth).slice(0,7))}.`);
     }
   });
 }
@@ -1821,9 +1836,89 @@ function currentInvoiceInfo(cardId){
   const items = pend.filter(t=>t.date===dueDate);
   return {dueDate, total:items.reduce((s,t)=>s+Number(t.value),0), count:items.length, late:dueDate<todayISO(), ids:items.map(t=>t.id)};
 }
-function openPayInvoiceModal(cardId){
+function invoiceInfoFor(cardId, dueDate){
+  const items = state.transactions.filter(t=>t.cardId===cardId && t.type==='despesa' && t.status==='pendente' && t.date===dueDate);
+  if(!items.length) return null;
+  return {dueDate, total:items.reduce((s,t)=>s+Number(t.value),0), count:items.length, late:dueDate<todayISO(), ids:items.map(t=>t.id)};
+}
+function isInvoiceClosed(card, dueDate){ return !!(card && card.closings && card.closings[dueDate]); }
+function openInvoiceMonthFrom(card, month){
+  // se a fatura desse mês já foi fechada por você, o lançamento vai para a primeira que ainda está aberta
+  let m = month;
+  for(let k=0; k<24 && isInvoiceClosed(card, invoiceDueDate(card,m)); k++) m = addMonthsToKey(m,1);
+  return m;
+}
+function invoiceMonthFromDue(card, dueDate){
+  const dueMonth = dueDate.slice(0,7);
+  const due = card.dueDay? (parseInt(card.dueDay,10)||10) : 10;
+  const closing = card.closingDay? (parseInt(card.closingDay,10)||0) : 0;
+  return (closing && due<=closing)? addMonthsToKey(dueMonth,-1) : dueMonth;
+}
+function closingDateOf(card, invoiceMonth){
+  const c = parseInt(card.closingDay,10);
+  return c? invoiceMonth+'-'+pad(Math.min(c, daysInMonth(invoiceMonth))) : '';
+}
+function cardInvoices(card){
+  const today = todayISO();
+  const byDue = {};
+  state.transactions.forEach(t=>{ if(t.cardId===card.id && t.type==='despesa' && t.date){ (byDue[t.date] = byDue[t.date] || []).push(t); } });
+  const make = (due, items)=>{
+    const pending = items.filter(t=>t.status!=='pago');
+    const invMonth = invoiceMonthFromDue(card, due);
+    const closingDate = closingDateOf(card, invMonth);
+    return { cardId:card.id, dueDate:due, invoiceMonth:invMonth, closingDate, items,
+      total: items.reduce((s,t)=>s+Number(t.value),0), pendingTotal: pending.reduce((s,t)=>s+Number(t.value),0),
+      count: items.length, paid: items.length>0 && pending.length===0, manualClosed: isInvoiceClosed(card,due),
+      closedByDate: !!closingDate && closingDate < today, late: pending.length>0 && due < today };
+  };
+  const list = Object.keys(byDue).map(due=>make(due, byDue[due]));
+  // sempre existe uma fatura aberta: a do ciclo de hoje (ou a seguinte, se essa já foi fechada ou paga)
+  let m = firstInvoiceMonth(card, today);
+  for(let k=0; k<12; k++){
+    const due = invoiceDueDate(card, m);
+    let inv = list.find(i=>i.dueDate===due);
+    if(!inv){ inv = make(due, []); list.push(inv); }
+    if(!inv.manualClosed && !inv.paid) break;
+    m = addMonthsToKey(m,1);
+  }
+  list.sort((a,b)=>a.dueDate.localeCompare(b.dueDate));
+  let openDone = false;
+  list.forEach(inv=>{
+    if(inv.paid) inv.status = 'paga';
+    else if(inv.manualClosed) inv.status = 'fechada';
+    else if(inv.closedByDate) inv.status = 'fechou';          // passou do dia de fechamento: falta você confirmar
+    else if(!openDone){ inv.status = 'aberta'; openDone = true; }
+    else inv.status = 'futura';
+  });
+  return list;
+}
+function closeInvoice(cardId, dueDate){
+  const card = state.cards.find(c=>c.id===cardId); if(!card) return;
+  const inv = cardInvoices(card).find(i=>i.dueDate===dueDate);
+  card.closings = card.closings || {};
+  card.closings[dueDate] = { closedAt: Date.now(), total: inv? inv.total : 0 };
+  saveState(); renderAll();
+  const next = cardInvoices(card).find(i=>i.status==='aberta');
+  showToast(next? `Fatura fechada. A de ${monthLabel(next.dueDate.slice(0,7))} agora está aberta, com ${fmtCurrency(next.total)} já lançados.` : 'Fatura fechada.');
+}
+function openCloseInvoiceModal(cardId, dueDate){
+  const card = state.cards.find(c=>c.id===cardId); if(!card) return;
+  const inv = cardInvoices(card).find(i=>i.dueDate===dueDate);
+  if(!inv || inv.paid || inv.manualClosed) return;
+  confirmModal(`Fechar a fatura de ${monthLabel(dueDate.slice(0,7))}?`,
+    `${card.name} · vence ${fmtDate(dueDate)} · ${inv.count} lançamento(s) · total ${fmtCurrency(inv.total)}. Depois de fechada, o que você lançar nesse cartão passa a ir para a próxima fatura. Se precisar, dá para reabrir.`,
+    ()=>closeInvoice(cardId, dueDate), 'Confirmar fechamento', 'primary');
+}
+function reopenInvoice(cardId, dueDate){
   const card = state.cards.find(c=>c.id===cardId);
-  const info = currentInvoiceInfo(cardId);
+  if(!card || !card.closings || !card.closings[dueDate]) return;
+  delete card.closings[dueDate];
+  saveState(); renderAll();
+  showToast('Fatura reaberta.');
+}
+function openPayInvoiceModal(cardId, dueDate){
+  const card = state.cards.find(c=>c.id===cardId);
+  const info = dueDate? invoiceInfoFor(cardId, dueDate) : currentInvoiceInfo(cardId);
   if(!card || !info) return;
   openFormModal({
     title:`Pagar fatura ${card.name} · ${fmtCurrency(info.total)}`,
@@ -1836,9 +1931,45 @@ function openPayInvoiceModal(cardId){
         const t = state.transactions.find(x=>x.id===id);
         if(t){ t.status = 'pago'; t.paidAt = v.paidAt || todayISO(); t.forceCount = true; t.preSettled = false; t.accountId = v.accountId || t.accountId || defaultAccountId(); }
       });
+      card.closings = card.closings || {};
+      if(!card.closings[info.dueDate]) card.closings[info.dueDate] = { closedAt: Date.now(), total: info.total };   // pagar implica fatura fechada
       saveState(); renderAll();
     }
   });
+}
+function invoiceBadge(inv){
+  const map = {aberta:['green','Aberta'], fechou:['gold','Fechou · confirmar'], fechada:['gold','Fechada'], futura:['grey','Futura'], paga:['green','Paga']};
+  const [cls,label] = map[inv.status];
+  return `<span class="badge ${cls}">${label}</span>${inv.late? ' <span class="badge rust">Atrasada</span>' : ''}`;
+}
+function invoiceCardHtml(card, inv){
+  const key = `${card.id}|${inv.dueDate}`;
+  const actions =
+    inv.status==='aberta'  ? `<button class="btn small primary" data-inv-close="${key}">Fechar fatura</button>` :
+    inv.status==='fechou'  ? `<button class="btn small primary" data-inv-close="${key}">Confirmar fechamento</button><button class="btn small" data-inv-pay="${key}">Marcar como paga</button>` :
+    inv.status==='fechada' ? `<button class="btn small primary" data-inv-pay="${key}">Marcar como paga</button><button class="btn small" data-inv-reopen="${key}">Reabrir</button>` : '';
+  const rows = inv.items.slice().sort((a,b)=>(a.purchaseDate||a.date).localeCompare(b.purchaseDate||b.date));
+  return `<div class="card invoice-card ${inv.status}">
+    <div class="stat-label">${escapeHtml(card.name)} ${invoiceBadge(inv)}</div>
+    <div class="inv-title">Fatura de ${escapeHtml(monthLabel(inv.dueDate.slice(0,7)))}</div>
+    <div class="stat-value ${inv.paid? 'pos' : 'neg'} num">${fmtCurrency(inv.total)}</div>
+    <div class="stat-foot">${inv.paid? 'Paga' : 'A pagar'} · vence ${fmtDate(inv.dueDate)}${inv.closingDate? ' · fecha '+fmtDate(inv.closingDate) : ''} · ${inv.count} lançamento(s)</div>
+    ${actions? `<div class="inv-actions">${actions}</div>` : ''}
+    ${inv.count? `<details class="invoice-items"><summary>Ver lançamentos</summary><table><tbody>${rows.map(t=>`<tr><td>${fmtDate(t.purchaseDate||t.date)}</td><td>${escapeHtml(t.description)}</td><td class="right num">${fmtCurrency(t.value)}</td><td>${t.status==='pago'? '<span class="badge green">Pago</span>' : '<span class="badge gold">Pendente</span>'}</td></tr>`).join('')}</tbody></table></details>` : ''}
+  </div>`;
+}
+function cardInvoicesHtml(){
+  return state.cards.map(card=>{
+    const all = cardInvoices(card);
+    const open = all.filter(i=>!i.paid);
+    const paid = all.filter(i=>i.paid).slice(-3).reverse();
+    return `<div class="card-invoices">
+      <div class="inv-card-head"><strong>${escapeHtml(card.name)}</strong><span class="help-text" style="margin:0">Fecha dia ${card.closingDay||'—'} · vence dia ${card.dueDay||'—'}</span></div>
+      <div class="grid grid-3">${open.slice(0,6).map(i=>invoiceCardHtml(card,i)).join('')}</div>
+      ${open.length>6? `<div class="help-text" style="margin:8px 0 0">+ ${open.length-6} fatura(s) futura(s) com lançamentos</div>` : ''}
+      ${paid.length? `<details class="paid-invoices"><summary>Faturas pagas (${paid.length})</summary><div class="grid grid-3">${paid.map(i=>invoiceCardHtml(card,i)).join('')}</div></details>` : ''}
+    </div>`;
+  }).join('');
 }
 function invoiceTotalsByMonth(cardId, monthsBack){
   const cur = todayMonthKey();
@@ -1856,21 +1987,13 @@ let invoiceCompareCard = '';
 RENDERERS.parcelamentos = function(){
   const cards = state.cards;
   if(!invoiceCompareCard && cards.length) invoiceCompareCard = cards[0].id;
-  const currentInvoices = cards.map(c=>({card:c, info:currentInvoiceInfo(c.id)}));
   $('#view-parcelamentos').innerHTML = `
-    <div class="view-head"><div><h1>Faturas</h1><div class="view-sub">Compras parceladas no cartão de crédito e fatura atual de cada cartão</div></div>
+    <div class="view-head"><div><h1>Faturas</h1><div class="view-sub">Cada cartão com as suas faturas: aberta, fechada e paga</div></div>
       <button class="btn primary" id="btn-new-inst">${icon('plus',15)} Novo parcelamento</button></div>
 
     ${cards.length? `
-    <div class="section-title" style="margin-top:0"><h2>Fatura aberta</h2></div>
-    <div class="grid grid-3">${currentInvoices.map(({card,info})=>`
-      <div class="card">
-        <div class="stat-label">${escapeHtml(card.name)} ${info && info.late? '<span class="badge rust">Atrasada</span>' : ''}</div>
-        <div class="stat-value neg num">${info? fmtCurrency(info.total) : fmtCurrency(0)}</div>
-        <div class="stat-foot">${info? 'A pagar · vence em '+fmtDate(info.dueDate)+' · '+info.count+' lançamento(s)' : 'Sem fatura em aberto'}</div>
-        <div class="stat-foot">Fecha dia ${card.closingDay||'—'} · vence dia ${card.dueDay||'—'}</div>
-        ${info? `<div style="margin-top:12px"><button class="btn small primary" data-pay-invoice="${card.id}">${icon('checkCircle',14)} Marcar fatura como paga</button></div>` : ''}
-      </div>`).join('')}</div>
+    <div class="section-title" style="margin-top:0"><h2>Faturas</h2></div>
+    ${cardInvoicesHtml()}
 
     <div class="section-title"><h2>Comparativo de faturas</h2>
       <div class="toolbar" style="margin:0">
@@ -1897,7 +2020,9 @@ RENDERERS.parcelamentos = function(){
     </div>`;
   }
   $('#btn-new-inst').onclick=()=>openInstallmentModal();
-  $$('[data-pay-invoice]').forEach(b=>b.onclick=()=>openPayInvoiceModal(b.dataset.payInvoice));
+  $$('[data-inv-close]').forEach(b=>b.onclick=()=>{ const [c,d] = b.dataset.invClose.split('|'); openCloseInvoiceModal(c,d); });
+  $$('[data-inv-pay]').forEach(b=>b.onclick=()=>{ const [c,d] = b.dataset.invPay.split('|'); openPayInvoiceModal(c,d); });
+  $$('[data-inv-reopen]').forEach(b=>b.onclick=()=>{ const [c,d] = b.dataset.invReopen.split('|'); reopenInvoice(c,d); });
   $$('[data-edit-inst]').forEach(b=>b.onclick=()=>openInstallmentModal(state.installments.find(i=>i.id===b.dataset.editInst)));
   $$('[data-del-inst]').forEach(b=>b.onclick=()=>confirmModal('Excluir parcelamento?','As parcelas já lançadas em Lançamentos também serão removidas.',()=>{
     const id=b.dataset.delInst;
@@ -1938,6 +2063,11 @@ function openInstallmentModal(inst){
       {name:'note',label:'Observação',type:'textarea'}
     ],
     onSubmit(v){
+      let shifted = null;
+      if(!isEdit && v.cardId){   // parcelamento novo num cartão cuja fatura desse mês já foi fechada: vai para a próxima aberta
+        const cardX = state.cards.find(c=>c.id===v.cardId);
+        if(cardX){ const mm = openInvoiceMonthFrom(cardX, v.startMonth); if(mm!==v.startMonth){ shifted = {card:cardX, from:v.startMonth, to:mm}; v.startMonth = mm; } }
+      }
       const count = Math.max(1,parseInt(v.count));
       const installmentValue = Math.round(v.totalValue/count*100)/100;
       const raw = String(v.alreadyPaid==null? '' : v.alreadyPaid).trim();
@@ -1965,6 +2095,7 @@ function openInstallmentModal(inst){
       } else {
         state.installments.push({id:uid(),...v,count,installmentValue,status:'ativo'});
         materializeAll(); renderAll();
+        if(shifted) showToast(`A fatura de ${monthLabel(invoiceDueDate(shifted.card,shifted.from).slice(0,7))} já está fechada: o parcelamento começa na de ${monthLabel(invoiceDueDate(shifted.card,shifted.to).slice(0,7))}.`);
       }
     },
     onDelete: isEdit? ()=>{confirmModal('Excluir parcelamento?','As parcelas lançadas também serão removidas.',()=>{

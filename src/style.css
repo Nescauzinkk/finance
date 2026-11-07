@@ -554,3 +554,20 @@ tbody tr:hover{background:rgba(162,75,255,.10);}
 .period-range label{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-soft);}
 .period-range input{padding:6px 10px;font-size:12.5px;color:var(--ink);background-color:rgba(8,4,18,.55);border:1px solid var(--glass-border);border-radius:var(--r);}
 .period-range input:focus{outline:none;border-color:var(--purple-bright);box-shadow:0 0 0 3px rgba(162,75,255,.2);}
+
+/* ---------- Faturas: ciclo de vida ---------- */
+.card-invoices{margin-bottom:26px;}
+.inv-card-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:0 0 10px;}
+.inv-card-head strong{font-family:'Sora',sans-serif;font-size:15px;letter-spacing:.02em;}
+.inv-title{font-family:'Sora',sans-serif;font-weight:600;font-size:14px;margin:2px 0 6px;}
+.inv-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;}
+.invoice-card.aberta{border-color:rgba(61,240,138,.35);box-shadow:var(--glass-shadow),0 0 26px rgba(61,240,138,.10);}
+.invoice-card.fechou,.invoice-card.fechada{border-color:rgba(255,211,77,.35);}
+.invoice-card.futura{opacity:.88;}
+.invoice-items{margin-top:12px;font-size:12.5px;}
+.invoice-items summary,.paid-invoices summary{cursor:pointer;color:var(--purple-bright);font-weight:600;list-style:none;}
+.invoice-items summary::-webkit-details-marker,.paid-invoices summary::-webkit-details-marker{display:none;}
+.invoice-items table{width:100%;margin-top:8px;border-collapse:collapse;}
+.invoice-items td{padding:6px 4px;border-top:1px solid var(--line-soft);}
+.paid-invoices{margin-top:14px;}
+.paid-invoices .grid{margin-top:10px;}
