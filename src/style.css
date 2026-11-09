@@ -571,3 +571,12 @@ tbody tr:hover{background:rgba(162,75,255,.10);}
 .invoice-items td{padding:6px 4px;border-top:1px solid var(--line-soft);}
 .paid-invoices{margin-top:14px;}
 .paid-invoices .grid{margin-top:10px;}
+
+/* ---------- Aviso com botão (Desfazer) ---------- */
+.toast.has-action{pointer-events:auto;display:flex;align-items:center;gap:14px;}
+.toast-action{
+  padding:5px 12px;font-size:12.5px;font-weight:700;font-family:inherit;cursor:pointer;color:#fff;
+  background:rgba(162,75,255,.28);border:1px solid var(--purple-bright);border-radius:var(--r);
+  transition:all .2s ease;
+}
+.toast-action:hover{background:rgba(162,75,255,.5);box-shadow:0 0 16px var(--purple-glow);}

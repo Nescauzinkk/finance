@@ -76,6 +76,7 @@ const ICON_PATHS = {
   chevronLeft:'<path d="M15 18l-6-6 6-6"/>',
   chevronRight:'<path d="M9 18l6-6-6-6"/>',
   chevronDown:'<path d="M6 9l6 6 6-6"/>',
+  undo:'<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/>',
   alertTriangle:'<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
   checkCircle:'<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/>',
   wallet:'<path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/>',
@@ -496,14 +497,21 @@ function ensureEl(id){
   if(!e){ e = document.createElement('div'); e.id = id; document.body.appendChild(e); }
   return e;
 }
-function showToast(msg, kind){
+function showToast(msg, kind, action){
   const root = ensureEl('toasts');
   const el = document.createElement('div');
-  el.className = 'toast '+(kind||'');
-  el.textContent = msg;
+  el.className = 'toast '+(kind||'')+(action? ' has-action' : '');
+  const txt = document.createElement('span'); txt.textContent = msg; el.appendChild(txt);
+  if(action){
+    const b = document.createElement('button');
+    b.className = 'toast-action'; b.textContent = action.label;
+    b.onclick = ()=>{ el.remove(); action.fn(); };
+    el.appendChild(b);
+  }
   root.appendChild(el);
-  setTimeout(()=>el.classList.add('hide'), 4200);
-  setTimeout(()=>el.remove(), 4800);
+  const life = action? 9000 : 4200;
+  setTimeout(()=>el.classList.add('hide'), life);
+  setTimeout(()=>el.remove(), life+600);
 }
 function showSaveBanner(msg){
   const b = ensureEl('save-banner');
@@ -1334,7 +1342,7 @@ RENDERERS.lancamentos = function(){
       <td class="right num">${fmtCurrency(t.value)}</td>
       <td>${escapeHtml(t.paymentMethod||'—')}</td>
       <td>${t.status==='pago'?'<span class="badge green">Pago</span>':'<span class="badge gold">Pendente</span>'}${paidNote(t)}</td>
-      <td>${t.type==='ajuste'? '' : `<button class="icon-btn" data-edit="${t.id}" title="Editar">${icon('edit',15)}</button><button class="icon-btn" data-dup="${t.id}" title="Duplicar">${icon('copy',15)}</button>`}<button class="icon-btn" data-del="${t.id}" title="Excluir">${icon('trash',15)}</button></td>
+      <td>${t.type==='ajuste'? '' : `<button class="icon-btn" data-edit="${t.id}" title="Editar">${icon('edit',15)}</button><button class="icon-btn" data-dup="${t.id}" title="Duplicar">${icon('copy',15)}</button>`}${undoButtonHtml(t)}<button class="icon-btn" data-del="${t.id}" title="Excluir">${icon('trash',15)}</button></td>
     </tr>`;
   }
   let searchDebounce;
@@ -1345,6 +1353,7 @@ RENDERERS.lancamentos = function(){
   $('#f-status').onchange=e=>{lancFilter.status=e.target.value;RENDERERS.lancamentos();};
   $('#btn-new-lanc').onclick=()=>openLancModal();
   $$('[data-edit]').forEach(b=>b.onclick=()=>openLancModal(state.transactions.find(t=>t.id===b.dataset.edit)));
+  $$('[data-undo]').forEach(b=>b.onclick=()=>undoPayment(b.dataset.undo));
   $$('[data-dup]').forEach(b=>b.onclick=()=>{
     const orig = state.transactions.find(t=>t.id===b.dataset.dup);
     const copy = {...orig,id:uid(),source:'manual',sourceId:null,genKey:null,createdAt:Date.now()};
@@ -1584,7 +1593,7 @@ RENDERERS.planejamento = function(){
         <td>${typeBadge(t.type)}</td>
         <td class="right num">${fmtCurrency(t.value)}</td>
         <td>${t.virtual? '<span class="badge grey" title="Previsão da recorrência — vira lançamento uns 3 meses antes da data">Previsto</span>' : (t.status==='pago'?'<span class="badge green">Pago</span>':'<span class="badge gold">Pendente</span>')+paidNote(t)}</td>
-        <td>${t.type==='ajuste'? '' : t.virtual? `<button class="icon-btn" data-edit-src="${t.source}" data-src-id="${t.sourceId}" title="Editar a recorrência">${icon('edit',15)}</button>` : `<button class="icon-btn" data-edit-day="${t.id}" title="Editar">${icon('edit',15)}</button>`}</td>
+        <td>${t.type==='ajuste'? '' : t.virtual? `<button class="icon-btn" data-edit-src="${t.source}" data-src-id="${t.sourceId}" title="Editar a recorrência">${icon('edit',15)}</button>` : `<button class="icon-btn" data-edit-day="${t.id}" title="Editar">${icon('edit',15)}</button>`+undoButtonHtml(t)}</td>
       </tr>`).join('') : emptyRow(6,'calendar','Nada nesse dia','Nenhum lançamento registrado para essa data.')}</tbody>
     </table></div>
 
@@ -1615,6 +1624,7 @@ RENDERERS.planejamento = function(){
   if(todayBtn) todayBtn.onclick=()=>{planDay=todayISO();RENDERERS.planejamento();};
   $('#btn-new-lanc-day').onclick=()=>openLancModal(null, planDay);
   $$('[data-edit-day]').forEach(b=>b.onclick=()=>openLancModal(dayTxns.find(t=>t.id===b.dataset.editDay)));
+  $$('#view-planejamento [data-undo]').forEach(b=>b.onclick=()=>undoPayment(b.dataset.undo));
   $$('[data-edit-src]').forEach(b=>b.onclick=()=>{
     if(b.dataset.editSrc==='income') openIncomeModal(state.incomes.find(i=>i.id===b.dataset.srcId));
     else openRecModal(state.recurring.find(r=>r.id===b.dataset.srcId));
@@ -1628,6 +1638,45 @@ function typeBadge(type){
   if(type==='transferencia') return '<span class="badge gold">Transferência</span>';
   if(type==='ajuste') return '<span class="badge grey">Ajuste</span>';
   return '<span class="badge rust">Despesa</span>';
+}
+const PAY_FIELDS = ['status','paidAt','forceCount','preSettled','accountId','paymentMethod','category'];
+function snapshotPay(t){ const o = {}; PAY_FIELDS.forEach(k=>{ o[k] = (k in t)? t[k] : undefined; }); return o; }
+function applySnapshot(t, prev){ PAY_FIELDS.forEach(k=>{ if(prev[k]===undefined) delete t[k]; else t[k] = prev[k]; }); }
+function applyUndo(t){ t.status = 'pendente'; t.paidAt = ''; t.forceCount = false; t.preSettled = false; }
+function undoEffectText(t){
+  if(t.type==='transferencia') return 'O saldo das contas é recalculado.';
+  const acc = state.accounts.find(a=>a.id===t.accountId);
+  if(!acc || !txCountsForBalance(t)) return 'Isso não muda o saldo das contas.';
+  return t.type==='receita'? `${fmtCurrency(t.value)} deixa de entrar no saldo de "${acc.name}".` : `${fmtCurrency(t.value)} volta para o saldo de "${acc.name}".`;
+}
+function undoPayment(txId){
+  const t = state.transactions.find(x=>x.id===txId);
+  if(!t || t.status!=='pago' || t.type==='ajuste') return;
+  if(t.preSettled){
+    confirmModal('Essa parcela já estava paga antes do Kivo',
+      'Ela foi marcada como "já paga" ao cadastrar a dívida ou o parcelamento. Para mudar isso, edite a dívida (ou o parcelamento) e ajuste o campo "Parcelas já pagas".',
+      ()=>{}, 'Entendi', 'primary');
+    return;
+  }
+  const isIn = t.type==='receita';
+  confirmModal(`Desfazer ${isIn? 'o recebimento' : 'o pagamento'}?`,
+    `"${t.description}" volta para pendente. ${undoEffectText(t)}`,
+    ()=>{ applyUndo(t); saveState(); renderAll(); showToast(isIn? 'Recebimento desfeito.' : 'Pagamento desfeito.'); },
+    'Desfazer', 'primary');
+}
+function undoInvoicePayment(cardId, dueDate){
+  const card = state.cards.find(c=>c.id===cardId);
+  const rows = state.transactions.filter(t=>t.cardId===cardId && t.type==='despesa' && t.date===dueDate && t.status==='pago' && !t.preSettled);
+  if(!card || !rows.length){ showToast('Não há pagamento para desfazer nessa fatura.','error'); return; }
+  const total = rows.reduce((s,t)=>s+Number(t.value),0);
+  confirmModal(`Desfazer o pagamento da fatura de ${monthLabel(dueDate.slice(0,7))}?`,
+    `${rows.length} lançamento(s), ${fmtCurrency(total)}, voltam para pendente e esse valor deixa de ser descontado das contas. A fatura continua fechada: dá para pagar de novo ou reabrir.`,
+    ()=>{ rows.forEach(applyUndo); saveState(); renderAll(); showToast('Pagamento da fatura desfeito.'); },
+    'Desfazer pagamento', 'primary');
+}
+function undoButtonHtml(t){
+  return (t.status==='pago' && (t.type==='receita' || t.type==='despesa' || t.type==='transferencia'))?
+    `<button class="icon-btn" data-undo="${t.id}" title="Desfazer pagamento">${icon('undo',15)}</button>` : '';
 }
 function markTransactionPaid(txId){
   const t = state.transactions.find(x=>x.id===txId);
@@ -1647,6 +1696,7 @@ function markTransactionPaid(txId){
     ],
     submitLabel: isIn? 'Marcar como recebido' : 'Marcar como pago',
     onSubmit(v){
+      const prev = snapshotPay(t);
       t.status = 'pago';
       t.paidAt = v.paidAt || todayISO();
       t.forceCount = true; t.preSettled = false;   // você marcou como pago: soma no saldo sempre
@@ -1654,7 +1704,7 @@ function markTransactionPaid(txId){
       if(v.paymentMethod) t.paymentMethod = v.paymentMethod;
       if(v.category) t.category = v.category;
       saveState(); renderAll();
-      showToast(isIn? 'Recebimento registrado.' : 'Pagamento registrado.');
+      showToast(isIn? 'Recebimento registrado.' : 'Pagamento registrado.', '', {label:'Desfazer', fn:()=>{ applySnapshot(t, prev); saveState(); renderAll(); showToast('Desfeito.'); }});
     }
   });
 }
@@ -1927,13 +1977,20 @@ function openPayInvoiceModal(cardId, dueDate){
             {name:'accountId',label:`Conta de onde saiu o pagamento · vence ${fmtDate(info.dueDate)} · ${info.count} lançamento(s)`,type:'select',options:accountOptions()}],
     submitLabel:'Marcar como paga',
     onSubmit(v){
+      const snaps = [];
       info.ids.forEach(id=>{
         const t = state.transactions.find(x=>x.id===id);
-        if(t){ t.status = 'pago'; t.paidAt = v.paidAt || todayISO(); t.forceCount = true; t.preSettled = false; t.accountId = v.accountId || t.accountId || defaultAccountId(); }
+        if(t){ snaps.push([t, snapshotPay(t)]); t.status = 'pago'; t.paidAt = v.paidAt || todayISO(); t.forceCount = true; t.preSettled = false; t.accountId = v.accountId || t.accountId || defaultAccountId(); }
       });
       card.closings = card.closings || {};
-      if(!card.closings[info.dueDate]) card.closings[info.dueDate] = { closedAt: Date.now(), total: info.total };   // pagar implica fatura fechada
+      const hadClosing = !!card.closings[info.dueDate];
+      if(!hadClosing) card.closings[info.dueDate] = { closedAt: Date.now(), total: info.total };   // pagar implica fatura fechada
       saveState(); renderAll();
+      showToast(`Fatura de ${monthLabel(info.dueDate.slice(0,7))} marcada como paga.`, '', {label:'Desfazer', fn:()=>{
+        snaps.forEach(([t,p])=>applySnapshot(t,p));
+        if(!hadClosing && card.closings) delete card.closings[info.dueDate];
+        saveState(); renderAll(); showToast('Desfeito.');
+      }});
     }
   });
 }
@@ -1947,7 +2004,8 @@ function invoiceCardHtml(card, inv){
   const actions =
     inv.status==='aberta'  ? `<button class="btn small primary" data-inv-close="${key}">Fechar fatura</button>` :
     inv.status==='fechou'  ? `<button class="btn small primary" data-inv-close="${key}">Confirmar fechamento</button><button class="btn small" data-inv-pay="${key}">Marcar como paga</button>` :
-    inv.status==='fechada' ? `<button class="btn small primary" data-inv-pay="${key}">Marcar como paga</button><button class="btn small" data-inv-reopen="${key}">Reabrir</button>` : '';
+    inv.status==='fechada' ? `<button class="btn small primary" data-inv-pay="${key}">Marcar como paga</button><button class="btn small" data-inv-reopen="${key}">Reabrir</button>` :
+    inv.status==='paga'    ? `<button class="btn small" data-inv-unpay="${key}">Desfazer pagamento</button>` : '';
   const rows = inv.items.slice().sort((a,b)=>(a.purchaseDate||a.date).localeCompare(b.purchaseDate||b.date));
   return `<div class="card invoice-card ${inv.status}">
     <div class="stat-label">${escapeHtml(card.name)} ${invoiceBadge(inv)}</div>
@@ -2023,6 +2081,7 @@ RENDERERS.parcelamentos = function(){
   $$('[data-inv-close]').forEach(b=>b.onclick=()=>{ const [c,d] = b.dataset.invClose.split('|'); openCloseInvoiceModal(c,d); });
   $$('[data-inv-pay]').forEach(b=>b.onclick=()=>{ const [c,d] = b.dataset.invPay.split('|'); openPayInvoiceModal(c,d); });
   $$('[data-inv-reopen]').forEach(b=>b.onclick=()=>{ const [c,d] = b.dataset.invReopen.split('|'); reopenInvoice(c,d); });
+  $$('[data-inv-unpay]').forEach(b=>b.onclick=()=>{ const [c,d] = b.dataset.invUnpay.split('|'); undoInvoicePayment(c,d); });
   $$('[data-edit-inst]').forEach(b=>b.onclick=()=>openInstallmentModal(state.installments.find(i=>i.id===b.dataset.editInst)));
   $$('[data-del-inst]').forEach(b=>b.onclick=()=>confirmModal('Excluir parcelamento?','As parcelas já lançadas em Lançamentos também serão removidas.',()=>{
     const id=b.dataset.delInst;
