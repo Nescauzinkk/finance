@@ -580,3 +580,25 @@ tbody tr:hover{background:rgba(162,75,255,.10);}
   transition:all .2s ease;
 }
 .toast-action:hover{background:rgba(162,75,255,.5);box-shadow:0 0 16px var(--purple-glow);}
+
+/* ---------- Lançamentos: período, resumo e categorias ---------- */
+.lp-btn{padding:7px 14px;font-size:12.5px;font-weight:600;font-family:inherit;color:var(--ink-soft);background:rgba(162,75,255,.07);border:1px solid var(--glass-border);border-radius:999px;cursor:pointer;transition:all .2s ease;}
+.lp-btn:hover{color:#fff;border-color:var(--purple-bright);box-shadow:0 0 16px var(--purple-glow);}
+.lp-btn.active{color:#fff;background:rgba(162,75,255,.28);border-color:var(--purple-bright);box-shadow:0 0 16px var(--purple-glow);}
+.lp-nav{display:inline-flex;align-items:center;gap:8px;margin-left:8px;}
+.lp-label{font-weight:700;font-size:13px;color:var(--ink);}
+.lanc-summary{margin-bottom:18px;}
+.lanc-breakdown{margin-top:12px;}
+.lanc-breakdown summary{cursor:pointer;color:var(--purple-bright);font-weight:600;list-style:none;}
+.lanc-breakdown summary::-webkit-details-marker{display:none;}
+.cat-row{display:grid;grid-template-columns:minmax(90px,150px) 1fr 100px 40px;gap:10px;align-items:center;padding:6px 8px;font-size:12.5px;border-bottom:1px solid var(--line-soft);border-radius:var(--r);transition:background .2s;}
+.cat-row[data-cat]{cursor:pointer;}
+.cat-row[data-cat]:hover{background:rgba(162,75,255,.12);}
+.cat-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.cat-track{height:8px;background:rgba(162,75,255,.12);border-radius:4px;overflow:hidden;}
+.cat-track i{display:block;height:100%;border-radius:4px;}
+.cat-row.des .cat-track i{background:linear-gradient(90deg,#ff5a78,#ff9bb0);}
+.cat-row.rec .cat-track i{background:linear-gradient(90deg,#3df08a,#9dffc4);}
+.cat-val{text-align:right;}
+.cat-pct{text-align:right;color:var(--ink-soft);}
+@media(max-width:860px){ .cat-row{grid-template-columns:minmax(70px,110px) 1fr 84px 36px;} }

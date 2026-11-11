@@ -1306,29 +1306,119 @@ function renderUpcomingList(items, startingBalance){
 }
 
 /* ===================== LANÇAMENTOS ===================== */
-let lancFilter = {mes:'todos',tipo:'todos',categoria:'todos',status:'todos',busca:''};
+let lancFilter = {tipo:'todos',categoria:'todos',status:'todos',busca:''};
+let lancPeriod = {mode:'mes', month:todayMonthKey(), custom:{from:'',to:''}, cycleRef:null};
+function filterLancamentos(list, per, f){
+  let out = list;
+  if(!per.all) out = out.filter(t=>{ const d = cashDate(t); return d && d>=per.from && d<=per.to; });   // vale o dia em que o dinheiro mexeu
+  if(f.tipo!=='todos') out = out.filter(t=>t.type===f.tipo);
+  if(f.categoria!=='todos') out = out.filter(t=>t.category===f.categoria);
+  if(f.status!=='todos') out = out.filter(t=>t.status===f.status);
+  const q = (f.busca||'').trim().toLowerCase();
+  if(q) out = out.filter(t=>(t.description||'').toLowerCase().includes(q) || (t.category||'').toLowerCase().includes(q));
+  return out;
+}
+function lancSummary(rows){
+  const r2 = n=>Math.round(n*100)/100;
+  const rec = {total:0,done:0,pend:0,n:0}, des = {total:0,done:0,pend:0,n:0};
+  const catR = {}, catD = {};
+  let skipped = 0, topD = null, topR = null;
+  rows.forEach(t=>{
+    if(t.type!=='receita' && t.type!=='despesa'){ skipped++; return; }   // transferência e ajuste de saldo não são receita nem despesa
+    const v = Number(t.value)||0, isIn = t.type==='receita', b = isIn? rec : des, m = isIn? catR : catD;
+    b.total += v; b.n++; if(t.status==='pago') b.done += v; else b.pend += v;
+    const cat = t.category || 'Sem categoria'; m[cat] = (m[cat]||0)+v;
+    if(isIn){ if(!topR || v>topR.value) topR = {description:t.description, value:v}; }
+    else { if(!topD || v>topD.value) topD = {description:t.description, value:v}; }
+  });
+  [rec,des].forEach(b=>{ b.total = r2(b.total); b.done = r2(b.done); b.pend = r2(b.pend); });
+  return { rec, des, saldo:r2(rec.total-des.total), saldoDone:r2(rec.done-des.done), saldoPend:r2(rec.pend-des.pend), catR, catD, skipped, count:rows.length, topD, topR };
+}
+function catRowsHtml(map, total, kind){
+  const entries = Object.entries(map).sort((a,b)=>b[1]-a[1]);
+  if(!entries.length) return '<div class="help-text" style="margin:0">Nada neste período.</div>';
+  let rows = entries;
+  if(entries.length>10){ const rest = entries.slice(9); rows = entries.slice(0,9).concat([[`Outras categorias (${rest.length})`, rest.reduce((s,[,v])=>s+v,0), true]]); }
+  return rows.map(([name,v,agg])=>{
+    const pct = total? v/total*100 : 0;
+    const attrs = agg? '' : ` data-cat="${escapeHtml(name)}" data-ctype="${kind==='des'? 'despesa' : 'receita'}" title="Filtrar a lista por esta categoria"`;
+    return `<div class="cat-row ${kind}"${attrs}><span class="cat-name">${escapeHtml(name)}</span><div class="cat-track"><i style="width:${Math.max(2,Math.min(100,pct)).toFixed(1)}%"></i></div><span class="cat-val num">${fmtCurrency(v)}</span><span class="cat-pct">${pct.toFixed(0)}%</span></div>`;
+  }).join('');
+}
+function lancSummaryHtml(rows, per, anyFilter){
+  const s = lancSummary(rows);
+  return `<div class="lanc-summary">
+    <div class="grid grid-4">
+      <div class="card"><div class="stat-label">Receitas</div><div class="stat-value pos num">${fmtCurrency(s.rec.total)}</div>
+        <div class="stat-foot">Recebido ${fmtCurrency(s.rec.done)} · A receber ${fmtCurrency(s.rec.pend)}</div><div class="stat-foot">${s.rec.n} lançamento(s)</div></div>
+      <div class="card"><div class="stat-label">Despesas</div><div class="stat-value neg num">${fmtCurrency(s.des.total)}</div>
+        <div class="stat-foot">Pago ${fmtCurrency(s.des.done)} · A pagar ${fmtCurrency(s.des.pend)}</div><div class="stat-foot">${s.des.n} lançamento(s)</div></div>
+      <div class="card"><div class="stat-label">Saldo do período</div><div class="stat-value ${s.saldo>=0?'pos':'neg'} num">${fmtCurrency(s.saldo)}</div>
+        <div class="stat-foot">Realizado ${fmtCurrency(s.saldoDone)} · Pendente ${fmtCurrency(s.saldoPend)}</div><div class="stat-foot">Receitas − despesas</div></div>
+      <div class="card"><div class="stat-label">Destaques</div><div class="stat-value num" style="font-size:20px">${s.count} na lista</div>
+        <div class="stat-foot">${s.topD? 'Maior despesa: '+escapeHtml(s.topD.description)+' · '+fmtCurrency(s.topD.value) : 'Sem despesas'}</div>
+        <div class="stat-foot">${s.topR? 'Maior receita: '+escapeHtml(s.topR.description)+' · '+fmtCurrency(s.topR.value) : 'Sem receitas'}</div></div>
+    </div>
+    <div class="help-text" style="margin:8px 0 0">${escapeHtml(per.label)}${anyFilter? ' · somas dos lançamentos filtrados' : ''}${s.skipped? ` · ${s.skipped} transferência(s)/ajuste(s) não entram nas somas` : ''} · vale a data em que o dinheiro mexeu.</div>
+    <details class="lanc-breakdown"><summary>Ver por categoria</summary>
+      <div class="grid grid-2" style="margin-top:12px">
+        <div><div class="stat-label">Despesas por categoria</div>${catRowsHtml(s.catD, s.des.total, 'des')}</div>
+        <div><div class="stat-label">Receitas por categoria</div>${catRowsHtml(s.catR, s.rec.total, 'rec')}</div>
+      </div>
+      <div class="help-text" style="margin:8px 0 0">Clique numa categoria para filtrar a lista.</div>
+    </details>
+  </div>`;
+}
+function lancPeriodBarHtml(p){
+  const sd = parseInt(state.settings.primeiroDiaMes,10)||1;
+  const modes = [['tudo','Tudo'],['mes','Mês'],['ciclo',`Ciclo (dia ${sd})`],['30d','Últimos 30 dias'],['ano','Este ano'],['custom','Personalizado']];
+  const per = resolvePeriod(p);
+  const nav = p.mode==='mes' || p.mode==='ciclo';
+  return `<div class="period-bar">
+    ${modes.map(([m,l])=>`<button class="lp-btn ${m===p.mode?'active':''}" data-lpmode="${m}">${escapeHtml(l)}</button>`).join('')}
+    <span class="lp-nav">${nav? `<button class="btn" id="lp-prev">${icon('chevronLeft',16)}</button>` : ''}<span class="lp-label">${escapeHtml(per.label)}</span>${nav? `<button class="btn" id="lp-next">${icon('chevronRight',16)}</button>` : ''}</span>
+    ${p.mode==='custom'? `<span class="period-range"><label>De <input type="date" id="lp-from" value="${per.from}"></label><label>Até <input type="date" id="lp-to" value="${per.to}"></label></span>` : ''}
+  </div>`;
+}
+function lancCsv(rows){
+  const esc = v=>{ const x = String(v==null? '' : v); return /[";\r\n]/.test(x)? '"'+x.replace(/"/g,'""')+'"' : x; };
+  const num = n=>String(Math.round(Number(n)*100)/100).replace('.',',');
+  const tipo = {receita:'Receita', despesa:'Despesa', transferencia:'Transferência', ajuste:'Ajuste'};
+  const lines = [['Data','Descrição','Categoria','Tipo','Valor','Conta','Forma de pagamento','Status','Pago/recebido em'].join(';')];
+  rows.forEach(t=>{
+    const acc = state.accounts.find(a=>a.id===t.accountId);
+    lines.push([t.date? fmtDate(t.date) : '', t.description, t.category||'', tipo[t.type]||t.type, num(t.value), acc? acc.name : '', t.paymentMethod||'', t.status==='pago'? 'Pago' : 'Pendente', t.paidAt? fmtDate(t.paidAt) : ''].map(esc).join(';'));
+  });
+  return lines.join('\r\n');
+}
+function downloadText(text, filename){
+  const blob = new Blob(['\uFEFF'+text], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+}
 RENDERERS.lancamentos = function(){
-  const monthsSet = Array.from(new Set(state.transactions.map(txMonth))).sort().reverse();
-  let list = state.transactions.slice().sort((a,b)=> b.date.localeCompare(a.date));
-  if(lancFilter.mes!=='todos') list = list.filter(t=>txMonth(t)===lancFilter.mes);
-  if(lancFilter.tipo!=='todos') list = list.filter(t=>t.type===lancFilter.tipo);
-  if(lancFilter.categoria!=='todos') list = list.filter(t=>t.category===lancFilter.categoria);
-  if(lancFilter.status!=='todos') list = list.filter(t=>t.status===lancFilter.status);
-  if(lancFilter.busca.trim()) { const q=lancFilter.busca.trim().toLowerCase(); list = list.filter(t=>(t.description||'').toLowerCase().includes(q) || (t.category||'').toLowerCase().includes(q)); }
+  const per = resolvePeriod(lancPeriod);
+  const everything = state.transactions.slice().sort((a,b)=> b.date.localeCompare(a.date));
+  const list = filterLancamentos(everything, per, lancFilter);
+  const anyFilter = lancFilter.tipo!=='todos' || lancFilter.categoria!=='todos' || lancFilter.status!=='todos' || !!lancFilter.busca.trim();
+  const definedCats = state.categories.map(c=>c.name);
+  const extraCats = Array.from(new Set(state.transactions.map(t=>t.category).concat(lancFilter.categoria!=='todos'? [lancFilter.categoria] : []).filter(n=>n && !definedCats.includes(n)))).sort();
+  const catList = definedCats.concat(extraCats);
 
   $('#view-lancamentos').innerHTML = `
     <div class="view-head"><div><h1>Lançamentos</h1><div class="view-sub">Todas as receitas e despesas cadastradas</div></div>
-      <button class="btn primary" id="btn-new-lanc">${icon('plus',15)} Novo lançamento</button></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="btn-export-csv">${icon('barchart',15)} Exportar CSV</button><button class="btn primary" id="btn-new-lanc">${icon('plus',15)} Novo lançamento</button></div></div>
+    ${lancPeriodBarHtml(lancPeriod)}
+    ${lancSummaryHtml(list, per, anyFilter)}
     <div class="toolbar">
       <input type="text" id="f-busca" placeholder="Buscar por descrição ou categoria..." value="${escapeHtml(lancFilter.busca)}" style="min-width:220px">
-      <select id="f-mes"><option value="todos">Todos os meses</option>${monthsSet.map(m=>`<option value="${m}" ${lancFilter.mes===m?'selected':''}>${monthLabel(m)}</option>`).join('')}</select>
       <select id="f-tipo"><option value="todos">Todos os tipos</option><option value="receita" ${lancFilter.tipo==='receita'?'selected':''}>Receita</option><option value="despesa" ${lancFilter.tipo==='despesa'?'selected':''}>Despesa</option><option value="transferencia" ${lancFilter.tipo==='transferencia'?'selected':''}>Transferência</option><option value="ajuste" ${lancFilter.tipo==='ajuste'?'selected':''}>Ajuste</option></select>
-      <select id="f-cat"><option value="todos">Todas as categorias</option>${state.categories.map(c=>`<option value="${escapeHtml(c.name)}" ${lancFilter.categoria===c.name?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select>
+      <select id="f-cat"><option value="todos">Todas as categorias</option>${catList.map(n=>`<option value="${escapeHtml(n)}" ${lancFilter.categoria===n?'selected':''}>${escapeHtml(n)}</option>`).join('')}</select>${anyFilter? ' <button class="btn small" id="f-clear">Limpar filtros</button>' : ''}
       <select id="f-status"><option value="todos">Todos os status</option><option value="pago" ${lancFilter.status==='pago'?'selected':''}>Pago</option><option value="pendente" ${lancFilter.status==='pendente'?'selected':''}>Pendente</option></select>
     </div>
     <div class="table-wrap"><table>
       <thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th class="right">Valor</th><th>Pagamento</th><th>Status</th><th></th></tr></thead>
-      <tbody>${list.length? list.map(rowLanc).join('') : emptyRow(8,'wallet','Nenhum lançamento encontrado','Cadastre receitas e despesas ou use os módulos de recorrentes e parcelamentos.')}</tbody>
+      <tbody>${list.length? list.map(rowLanc).join('') : emptyRow(8,'wallet','Nenhum lançamento encontrado',(anyFilter || !per.all)? 'Tente outro período ou limpe os filtros.' : 'Cadastre receitas e despesas ou use os módulos de recorrentes e parcelamentos.')}</tbody>
     </table></div>
   `;
   function rowLanc(t){
@@ -1347,7 +1437,17 @@ RENDERERS.lancamentos = function(){
   }
   let searchDebounce;
   $('#f-busca').oninput=e=>{ clearTimeout(searchDebounce); const val=e.target.value; searchDebounce=setTimeout(()=>{ lancFilter.busca=val; RENDERERS.lancamentos(); const inp=$('#f-busca'); if(inp){ inp.focus(); inp.setSelectionRange(val.length,val.length); } },300); };
-  $('#f-mes').onchange=e=>{lancFilter.mes=e.target.value;RENDERERS.lancamentos();};
+  $$('.lp-btn').forEach(b=>b.onclick=()=>{ setPeriodMode(lancPeriod, b.dataset.lpmode); RENDERERS.lancamentos(); });
+  const lpPrev = $('#lp-prev'), lpNext = $('#lp-next');
+  if(lpPrev) lpPrev.onclick=()=>{ shiftPeriod(lancPeriod,-1); RENDERERS.lancamentos(); };
+  if(lpNext) lpNext.onclick=()=>{ shiftPeriod(lancPeriod,1); RENDERERS.lancamentos(); };
+  const lpFrom = $('#lp-from'), lpTo = $('#lp-to');
+  const applyLp = ()=>{ if(lpFrom.value && lpTo.value){ lancPeriod.custom = {from:lpFrom.value, to:lpTo.value}; RENDERERS.lancamentos(); } };
+  if(lpFrom) lpFrom.onchange = applyLp;
+  if(lpTo) lpTo.onchange = applyLp;
+  $$('#view-lancamentos .cat-row[data-cat]').forEach(el=>el.onclick=()=>{ lancFilter.categoria = el.dataset.cat; lancFilter.tipo = el.dataset.ctype; RENDERERS.lancamentos(); });
+  const clr = $('#f-clear'); if(clr) clr.onclick=()=>{ lancFilter = {tipo:'todos',categoria:'todos',status:'todos',busca:''}; RENDERERS.lancamentos(); };
+  $('#btn-export-csv').onclick=()=>{ downloadText(lancCsv(list), 'kivo-lancamentos-'+(per.all? 'todos' : per.from+'_a_'+per.to)+'.csv'); showToast(list.length+' lançamento(s) exportado(s).'); };
   $('#f-tipo').onchange=e=>{lancFilter.tipo=e.target.value;RENDERERS.lancamentos();};
   $('#f-cat').onchange=e=>{lancFilter.categoria=e.target.value;RENDERERS.lancamentos();};
   $('#f-status').onchange=e=>{lancFilter.status=e.target.value;RENDERERS.lancamentos();};
@@ -2419,28 +2519,41 @@ function cycleFor(refISO, startDay){
   const to = sd===1? fromMonth+'-'+pad(daysInMonth(fromMonth)) : addMonthsToKey(fromMonth,1)+'-'+pad(sd-1);
   return {from,to};
 }
-function reportPeriod(){
+function resolvePeriod(p){
   const today = todayISO();
-  if(reportMode==='ciclo'){ const c = cycleFor(reportCycleRef||today, state.settings.primeiroDiaMes); return {...c, label:rangeLabel(c.from,c.to)}; }
-  if(reportMode==='30d'){ const from = addDaysToISO(today,-29); return {from, to:today, label:'Últimos 30 dias · '+rangeLabel(from,today)}; }
-  if(reportMode==='ano'){ const y = today.slice(0,4); return {from:y+'-01-01', to:y+'-12-31', label:'Ano de '+y}; }
-  if(reportMode==='custom'){
-    let {from,to} = reportCustom;
+  if(p.mode==='tudo') return {from:'0000-01-01', to:'9999-12-31', label:'Todos os lançamentos', all:true};
+  if(p.mode==='ciclo'){ const c = cycleFor(p.cycleRef||today, state.settings.primeiroDiaMes); return {...c, label:rangeLabel(c.from,c.to)}; }
+  if(p.mode==='30d'){ const from = addDaysToISO(today,-29); return {from, to:today, label:'Últimos 30 dias · '+rangeLabel(from,today)}; }
+  if(p.mode==='ano'){ const y = today.slice(0,4); return {from:y+'-01-01', to:y+'-12-31', label:'Ano de '+y}; }
+  if(p.mode==='custom'){
+    let {from,to} = p.custom || {};
     if(!from || !to){ from = addDaysToISO(today,-29); to = today; }
     if(from>to){ const x=from; from=to; to=x; }
     return {from, to, label:rangeLabel(from,to)};
   }
-  return {from:reportMonth+'-01', to:reportMonth+'-'+pad(daysInMonth(reportMonth)), label:monthLabel(reportMonth)};
+  const month = p.month || todayMonthKey();
+  return {from:month+'-01', to:month+'-'+pad(daysInMonth(month)), label:monthLabel(month)};
 }
+function setPeriodMode(p, mode){
+  const before = resolvePeriod(p);
+  p.mode = mode;
+  if(mode==='ciclo') p.cycleRef = (p.month===todayMonthKey())? todayISO() : p.month+'-15';
+  if(mode==='custom' && (!p.custom || !p.custom.from || !p.custom.to) && !before.all) p.custom = {from:before.from, to:before.to};
+}
+function shiftPeriod(p, dir){
+  if(p.mode==='mes') p.month = addMonthsToKey(p.month, dir);
+  else if(p.mode==='ciclo'){ const r = resolvePeriod(p); p.cycleRef = dir<0? addDaysToISO(r.from,-1) : addDaysToISO(r.to,1); }
+}
+function reportPeriod(){ return resolvePeriod({mode:reportMode, month:reportMonth, custom:reportCustom, cycleRef:reportCycleRef}); }
 function setReportMode(mode){
-  const before = reportPeriod();
-  reportMode = mode;
-  if(mode==='ciclo') reportCycleRef = (reportMonth===todayMonthKey())? todayISO() : reportMonth+'-15';
-  if(mode==='custom' && (!reportCustom.from || !reportCustom.to)) reportCustom = {from:before.from, to:before.to};
+  const p = {mode:reportMode, month:reportMonth, custom:reportCustom, cycleRef:reportCycleRef};
+  setPeriodMode(p, mode);
+  reportMode = p.mode; reportCustom = p.custom; reportCycleRef = p.cycleRef;
 }
 function shiftReportPeriod(dir){
-  if(reportMode==='mes') reportMonth = addMonthsToKey(reportMonth, dir);
-  else if(reportMode==='ciclo'){ const p = reportPeriod(); reportCycleRef = dir<0? addDaysToISO(p.from,-1) : addDaysToISO(p.to,1); }
+  const p = {mode:reportMode, month:reportMonth, custom:reportCustom, cycleRef:reportCycleRef};
+  shiftPeriod(p, dir);
+  reportMonth = p.month; reportCycleRef = p.cycleRef;
 }
 function periodNavHtml(per){
   const nav = reportMode==='mes' || reportMode==='ciclo';
