@@ -1154,20 +1154,25 @@ function dashboardMessage(){
   }
   return {ic:'checkCircle', text:'Tudo em dia por aqui. Nenhum vencimento nos próximos 7 dias.'};
 }
-function dashboardHeader(){
+function dashboardHeader(per){
+  per = per || dashPeriod();
   const name = friendlyName();
   const base = name || (typeof currentUser!=='undefined' && currentUser && currentUser.email) || 'K';
   const msg = dashboardMessage();
+  const sd = parseInt(state.settings.primeiroDiaMes,10)||1;
+  const chips = [...(sd>1? [['ciclo','Ciclo']] : []), ['mes','Mês'], ['30d','Próx. 30 dias']];
+  const left = per.daysLeft===0? 'último dia' : `faltam ${per.daysLeft} dia${per.daysLeft>1? 's' : ''}`;
   return `<div class="view-head hello-head">
     <div class="hello">
       <div class="avatar">${escapeHtml(base.charAt(0).toUpperCase())}</div>
       <div class="hello-body">
         <h1>Olá${name? ', '+escapeHtml(name) : '!'}</h1>
-        <div class="view-sub">${greetingFor()} · ${dayLabel(todayISO())}</div>
+        <div class="view-sub">${greetingFor()} · ${escapeHtml(per.label)} · ${left}</div>
         <div class="hello-msg">${icon(msg.ic,15)}<span>${escapeHtml(msg.text)}</span>${msg.goto? `<button class="btn small" data-goto="${msg.goto}">Ver</button>` : ''}</div>
         ${name? '' : `<form id="quick-name" class="quick-name"><input type="text" id="quick-name-input" placeholder="Como você gostaria de ser chamado?" maxlength="40" autocomplete="given-name"><button class="btn small primary" type="submit">Salvar</button></form>`}
       </div>
     </div>
+    <div class="dash-chips">${chips.map(([m,l])=>`<button class="dash-chip ${m===per.mode? 'active' : ''}" data-dmode="${m}">${l}</button>`).join('')}</div>
   </div>`;
 }
 function firstStepsCard(){
@@ -1203,89 +1208,227 @@ function wireDashboardHeader(){
   });
 }
 
+/* ===================== DASHBOARD (visão do ciclo) ===================== */
+let dashMode = null;   // null = automático: ciclo, se o seu mês não começa no dia 1
+function rnd2(n){ return Math.round(n*100)/100; }
+function fmtDM(iso){ return iso.slice(8,10)+'/'+iso.slice(5,7); }
+function dashPeriod(){
+  const today = todayISO();
+  const sd = parseInt(state.settings.primeiroDiaMes,10)||1;
+  let mode = dashMode || (sd>1? 'ciclo' : 'mes');
+  if(mode==='ciclo' && sd<=1) mode = 'mes';
+  let from, to, label;
+  if(mode==='ciclo'){ const c = cycleFor(today, sd); from = c.from; to = c.to; label = `Ciclo de ${fmtDM(from)} a ${fmtDM(to)}`; }
+  else if(mode==='30d'){ from = today; to = addDaysToISO(today,29); label = 'Próximos 30 dias'; }
+  else { const mk = todayMonthKey(); from = mk+'-01'; to = mk+'-'+pad(daysInMonth(mk)); label = monthLabel(mk); }
+  return {mode, from, to, label, daysLeft: Math.max(0, daysBetween(today, to))};
+}
+function dashMetrics(per){
+  // "Posso gastar" = saldo das contas − o que ainda vence até o fim do período − reservas de metas.
+  // Receitas ainda não recebidas NÃO entram (prudência); aparecem à parte em "a receber".
+  const today = todayISO();
+  const pend = state.transactions.filter(t=>t.status==='pendente' && t.date && (t.type==='receita' || t.type==='despesa'));
+  const virt = virtualEntriesBetween(addDaysToISO(today,-1), per.to);   // previsão das recorrentes além da janela real
+  const upDes = pend.filter(t=>t.type==='despesa' && t.date>=today && t.date<=per.to).concat(virt.filter(v=>v.type==='despesa'));
+  const upRec = pend.filter(t=>t.type==='receita' && t.date>=today && t.date<=per.to).concat(virt.filter(v=>v.type==='receita'));
+  const late = pend.filter(t=>t.type==='despesa' && t.date<today);
+  const sum = a=>rnd2(a.reduce((x,t)=>x+(Number(t.value)||0),0));
+  const saldo = rnd2(totalAvailable());
+  const aPagar = sum(upDes), aReceber = sum(upRec), atrasado = sum(late);
+  const reservas = rnd2(state.goals.filter(g=>!goalDone(g)).reduce((a,g)=>a+(Number(g.monthlyPlanned)||0),0));
+  return {saldo, aPagar, aPagarCount:upDes.length, aReceber, atrasado, atrasadoCount:late.length, reservas,
+          livre: rnd2(saldo-aPagar-reservas), fimProjetado: rnd2(saldo+aReceber-aPagar)};
+}
+function dashSeries(per){
+  const today = todayISO(), pts = [];
+  for(let d=per.from, k=0; d<=per.to && k<400; d=addDaysToISO(d,1), k++){
+    const v = balanceAsOfDate(d);
+    if(v!==null) pts.push({date:d, value:rnd2(v), proj:d>today});
+  }
+  return pts;
+}
+function dashChartSvg(pts){
+  const today = todayISO();
+  if(pts.length<2) return '<div class="dash-note">Ainda não há dados suficientes para mostrar a evolução do saldo.</div>';
+  const W=640, H=214, top=26, bot=26, n=pts.length;
+  const vals = pts.map(p=>p.value);
+  const lo = Math.min(0,...vals), hi0 = Math.max(...vals,1), hi = hi0+(hi0-lo)*0.06;
+  const X = i=>(i/(n-1))*W;
+  const Y = v=>top+(hi-v)/(hi-lo)*(H-top-bot);
+  const f = x=>x.toFixed(1);
+  const ti = pts.findIndex(p=>p.date===today);
+  const split = ti>=0? ti : (pts[0].date>today? 0 : n-1);
+  const seg = (a,b)=>{ let d = `M${f(X(a))} ${f(Y(vals[a]))}`; for(let i=a+1;i<=b;i++) d += `H${f(X(i))}V${f(Y(vals[i]))}`; return d; };
+  const past = split>0? seg(0,split) : '', fut = split<n-1? seg(split,n-1) : '';
+  const area = seg(0,n-1)+`V${H-bot}H0Z`;
+  const anchor = x=>x>W*0.62? 'end' : 'start', dx = x=>x>W*0.62? -9 : 9;
+  const txt = (x,y,t,fill)=>`<text x="${f(x+dx(x))}" y="${f(y)}" text-anchor="${anchor(x)}"${fill? ` fill="${fill}"` : ''}>${t}</text>`;
+  let marks = '';
+  // hoje
+  const xt = X(split), yt = Y(vals[split]);
+  if(pts[split].date===today){
+    if(split>0) marks += `<path d="M${f(xt)} ${top-12}V${H-bot}" stroke="#A99FC4" stroke-dasharray="4 5"/>`;
+    marks += `<circle cx="${f(xt)}" cy="${f(yt)}" r="6" fill="#fff"/>` + txt(xt, yt-12, `hoje · ${fmtCurrency(vals[split])}`);
+  }
+  // menor saldo da previsão
+  let mi = split;
+  for(let i=split;i<n;i++) if(vals[i]<vals[mi]) mi = i;
+  if(mi>split && vals[mi]<vals[split]){
+    marks += `<circle cx="${f(X(mi))}" cy="${f(Y(vals[mi]))}" r="6" fill="#FF6B86"/>` + txt(X(mi), Y(vals[mi])+22, `menor saldo · ${fmtCurrency(vals[mi])} (${fmtDM(pts[mi].date)})`, '#FF8FA3');
+  }
+  // maior entrada prevista
+  let bi = -1, bv = 0;
+  for(let i=split+1;i<n;i++){ const d = vals[i]-vals[i-1]; if(d>bv){ bv = d; bi = i; } }
+  if(bi>0) marks += txt(X(bi), Y(vals[bi])-12, `entra ${fmtCurrency(rnd2(bv))} em ${fmtDM(pts[bi].date)}`, '#43E88C');
+  const zero = lo<0? `<path d="M0 ${f(Y(0))}H${W}" stroke="#FF6B86" stroke-dasharray="3 4"/><text x="4" y="${f(Y(0)-5)}" fill="#FF8FA3">R$ 0</text>` : '';
+  const grid = [0.25,0.5,0.75].map(g=>`<path d="M0 ${f(top+(H-top-bot)*g)}H${W}"/>`).join('');
+  const hits = pts.map((p,i)=>`<circle cx="${f(X(i))}" cy="${f(Y(p.value))}" r="9" fill="transparent"><title>${fmtDM(p.date)} · ${fmtCurrency(p.value)}${p.proj? ' (previsto)' : ''}</title></circle>`).join('');
+  const last = pts[n-1];
+  const aria = `Saldo ${pts[split].date===today? 'hoje '+fmtCurrency(vals[split])+', ' : ''}${mi>split? 'menor saldo '+fmtCurrency(vals[mi])+' em '+fmtDM(pts[mi].date)+', ' : ''}termina em ${fmtCurrency(last.value)} em ${fmtDM(last.date)}`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${escapeHtml(aria)}" style="display:block;font-size:12px">
+    <g stroke="rgba(176,102,255,.14)">${grid}</g>${zero}
+    <path d="${area}" fill="rgba(162,75,255,.16)"/>
+    ${past? `<path d="${past}" fill="none" stroke="#C58BFF" stroke-width="3"/>` : ''}
+    ${fut? `<path d="${fut}" fill="none" stroke="#A97BFF" stroke-width="3" stroke-dasharray="7 5"/>` : ''}
+    <g fill="#A99FC4">${marks}<text x="2" y="${H-8}">${fmtDM(pts[0].date)}</text><text x="${W-2}" y="${H-8}" text-anchor="end">${fmtDM(last.date)}</text></g>${hits}</svg>`;
+}
+function dashCategoriesHtml(byCategory){
+  const e = Object.entries(byCategory).sort((a,b)=>b[1]-a[1]);
+  if(!e.length) return '<div class="dash-note">Sem despesas neste período.</div>';
+  const rest = e.slice(5).reduce((x,[,v])=>x+v,0);
+  const rows = e.slice(0,5).concat(rest>0? [['Outras',rest,true]] : []);
+  const max = Math.max(...rows.map(r=>r[1]));
+  return rows.map(([nm,v,other])=>`<div class="dash-cr"><span class="dash-cat" title="${escapeHtml(nm)}">${escapeHtml(nm)}</span><div class="dash-bar"><i style="width:${max? Math.max(3,v/max*100).toFixed(0) : 0}%;background:${other? 'rgba(197,139,255,.5)' : '#C58BFF'}"></i></div><span class="num">${fmtCurrency(v)}</span></div>`).join('');
+}
+function dashVencimentosHtml(){
+  const today = todayISO();
+  const pend = state.transactions.filter(t=>t.status==='pendente' && t.type==='despesa' && t.date);
+  const late = pend.filter(t=>t.date<today).sort((a,b)=>a.date.localeCompare(b.date));
+  const next = pend.filter(t=>t.date>=today).sort((a,b)=>a.date.localeCompare(b.date));
+  const all = late.concat(next);
+  if(!all.length) return '<div class="dash-note">Nenhuma conta pendente. Tudo em dia.</div>';
+  const rows = all.slice(0,5).map(t=>{
+    let tag;
+    if(t.date<today) tag = '<span class="badge rust">Atrasada</span>';
+    else { const n = daysBetween(today,t.date); tag = `<span class="badge ${n<=7? 'gold' : 'grey'}">${n===0? 'hoje' : n===1? 'amanhã' : 'em '+n+' dias'}</span>`; }
+    return `<div class="dash-li"><span>${escapeHtml(t.description)}</span><span>${tag} <b class="num">${fmtCurrency(t.value)}</b></span></div>`;
+  }).join('');
+  return rows+`<div class="dash-note">${all.length>5? '+ '+(all.length-5)+' a mais · ' : ''}<a href="#" data-goto="planejamento">Ver no Orçamento</a></div>`;
+}
+function parcelasFuturas(){
+  let value = 0, count = 0;
+  state.installments.forEach(inst=>{
+    const left = Math.max(0, inst.count-installmentsPaidCount('installment',inst.id));
+    value += left*Number(inst.installmentValue); count += left;
+  });
+  return {value:rnd2(value), count};
+}
+function dashFaturasHtml(){
+  const pf = parcelasFuturas();
+  const blocks = state.cards.slice(0,2).map(card=>{
+    const list = cardInvoices(card).filter(i=>!i.paid).slice(0,3);
+    return `<div style="margin-top:12px"><b>${escapeHtml(card.name)}</b> <span class="dash-note" style="margin:0">· fecha dia ${card.closingDay||'—'} · vence dia ${card.dueDay||'—'}</span></div>`
+      + list.map(i=>`<div class="dash-li"><span>${escapeHtml(monthLabel(i.dueDate.slice(0,7)))} ${invoiceBadge(i)}</span><b class="num">${fmtCurrency(i.total)}</b></div>`).join('');
+  }).join('');
+  const more = state.cards.length>2? `<div class="dash-note">+ ${state.cards.length-2} cartão(ões) em Faturas</div>` : '';
+  const none = !state.cards.length? '<div class="dash-note">Cadastre um cartão para acompanhar as faturas.</div>' : '';
+  const foot = pf.value>0? `<div class="dash-li"><span>Parcelas futuras <span class="badge grey">${pf.count} parcela${pf.count===1? '' : 's'}</span></span><b class="num">${fmtCurrency(pf.value)}</b></div>` : '';
+  return blocks+more+none+foot;
+}
+function dashPatrimonio(rendaPeriodo){
+  const guardado = rnd2(state.goals.reduce((a,g)=>a+Number(g.currentValue||0),0));
+  const dividas = rnd2(state.debts.reduce((a,d)=>a+Math.max(0,d.count-installmentsPaidCount('debt',d.id))*Number(d.installmentValue),0));
+  const parcelas = parcelasFuturas().value;
+  const saldo = rnd2(totalAvailable());
+  const ativos = rnd2(saldo+guardado), passivos = rnd2(dividas+parcelas);
+  return {saldo, guardado, ativos, dividas, parcelas, passivos, liquido:rnd2(ativos-passivos), meses: rendaPeriodo>0? passivos/rendaPeriodo : 0};
+}
 RENDERERS.dashboard = function(){
-  const cur = todayMonthKey();
-  const s = monthSummary(cur);
-  const be = breakeven(cur);
-  const acc = accumulatedBalance(cur);
-  const guardado = state.goals.reduce((a,g)=>a+Number(g.currentValue||0),0);
-  const totalDividas = state.debts.reduce((a,d)=>{
-    const paid = installmentsPaidCount('debt',d.id);
-    return a + Math.max(0,(d.count-paid))*Number(d.installmentValue);
-  },0);
-  const totalParcelasFuturas = state.installments.reduce((a,inst)=>{
-    const paid = installmentsPaidCount('installment',inst.id);
-    return a + Math.max(0,(inst.count-paid))*Number(inst.installmentValue);
-  },0);
-  const comprometido = totalDividas+totalParcelasFuturas;
-  const mesesComprometido = s.plannedReceitas>0? (comprometido/s.plannedReceitas):0;
-  const ativos = totalAvailable() + guardado;
-  const passivos = comprometido;
-  const patrimonioLiquido = ativos - passivos;
-  const canSpend = canSpendNow(spendWindow);
-  const beColor = be.status==='verde'?'green':be.status==='amarelo'?'gold':'rust';
-  const beText = be.status==='verde'?'Positivo — margem confortável':be.status==='amarelo'?'Atenção — margem baixa':'Déficit projetado';
-
+  const per = dashPeriod();
+  const m = dashMetrics(per);
+  const s = periodSummary(per);
+  const pat = dashPatrimonio(s.plannedReceitas);
+  const pts = dashSeries(per);
+  const alerts = computeAlerts().filter(a=>a.sev!=='green' && a.sev!=='grey');
+  const pct = (done,plan)=>plan>0? Math.min(100, done/plan*100).toFixed(0) : 0;
+  const accNames = state.accounts.filter(a=>a.status!=='inativa').map(a=>a.name);
+  const sobra = rnd2(s.plannedReceitas-s.plannedDespesas);
   $('#view-dashboard').innerHTML = `
-    ${dashboardHeader()}
+    ${dashboardHeader(per)}
     ${firstStepsCard()}
 
-    <div class="status-banner" style="--c:var(--${beColor==='green'?'green':beColor==='gold'?'yellow':'red'});background:var(--${beColor==='green'?'green-bg':beColor==='gold'?'yellow-bg':'red-bg'});color:var(--${beColor==='green'?'green':beColor==='gold'?'yellow':'red'})">
-      <div class="icon-badge ${beColor==='green'?'green':beColor==='gold'?'yellow':'red'}" style="margin-bottom:0">${icon(beColor==='green'?'checkCircle':'alertTriangle',18)}</div>
-      <div style="flex:1">
-        <h3 style="color:var(--ink)">Seu mês está: ${beText}</h3>
-        <p>Você já comprometeu ${be.pct.toFixed(0)}% da receita prevista deste mês. Saldo projetado: <strong class="num" style="color:var(--ink)">${fmtCurrency(be.margem)}</strong>.</p>
+    <div class="dash-grid dash-hero">
+      <div class="card clickable ${m.livre>=0? 'dash-ok' : 'dash-bad'}" data-goto="planejamento">
+        <div class="stat-label">Posso gastar até ${fmtDM(per.to)}</div>
+        <div class="dash-big ${m.livre>=0? 'pos' : 'neg'} num">${fmtCurrency(m.livre)}</div>
+        <div class="dash-note">Saldo das contas (${fmtCurrency(m.saldo)}) menos o que ainda vence até lá (${fmtCurrency(m.aPagar)})${m.reservas>0? ` e as reservas de metas (${fmtCurrency(m.reservas)})` : ''}.</div>
+        ${m.aReceber>0? `<div class="dash-note">Se os ${fmtCurrency(m.aReceber)} a receber chegarem, o saldo termina em ${fmtCurrency(m.fimProjetado)}.</div>` : ''}
+        ${m.atrasado>0? `<div class="dash-note" style="color:var(--red)">Não conta ${fmtCurrency(m.atrasado)} em contas atrasadas. Confirme se já foram pagas.</div>` : ''}
+      </div>
+      <div class="card clickable" data-goto="contas">
+        <div class="stat-label">Saldo em contas</div>
+        <div class="dash-mid num">${fmtCurrency(m.saldo)}</div>
+        <div class="dash-note">${escapeHtml(accNames.slice(0,3).join(' e ') || 'Nenhuma conta ativa')}</div>
+      </div>
+      <div class="card clickable" data-goto="planejamento">
+        <div class="stat-label">A pagar até ${fmtDM(per.to)}</div>
+        <div class="dash-mid neg num">${fmtCurrency(m.aPagar)}</div>
+        <div class="dash-note">${m.aPagarCount} conta${m.aPagarCount===1? '' : 's'} pendente${m.aPagarCount===1? '' : 's'}${m.atrasadoCount? ` · ${m.atrasadoCount} atrasada${m.atrasadoCount===1? '' : 's'} (${fmtCurrency(m.atrasado)})` : ''}</div>
       </div>
     </div>
 
-    <div class="net-worth-card">
-      <div>
+    <div class="dash-grid dash-pat">
+      <div class="card clickable" data-goto="metas">
         <div class="stat-label">Patrimônio líquido</div>
-        <div class="stat-value ${patrimonioLiquido>=0?'pos':'neg'} num" style="font-size:30px">${fmtCurrency(patrimonioLiquido)}</div>
+        <div class="dash-mid ${pat.liquido>=0? 'pos' : 'neg'} num">${fmtCurrency(pat.liquido)}</div>
+        <div class="dash-note">Ativos ${fmtCurrency(pat.ativos)} (contas ${fmtCurrency(pat.saldo)} + metas ${fmtCurrency(pat.guardado)}) menos passivos ${fmtCurrency(pat.passivos)} (dívidas + parcelas).</div>
       </div>
-      <div class="breakdown">
-        <div>Ativos (saldo + guardado)<strong class="num" style="color:var(--green)">${fmtCurrency(ativos)}</strong></div>
-        <div>Passivos (dívidas + parcelas)<strong class="num" style="color:var(--red)">${fmtCurrency(passivos)}</strong></div>
-      </div>
-    </div>
-
-    <div class="grid grid-4">
-      <div class="card clickable" data-goto="lancamentos"><div class="icon-badge ${s.saldoRealizado>=0?'green':'red'}">${icon('wallet',17)}</div><div class="stat-label">Saldo do mês</div><div class="stat-value ${s.saldoRealizado>=0?'pos':'neg'} num">${fmtCurrency(s.saldoRealizado)}</div><div class="stat-foot">Planejado: <span class="num">${fmtCurrency(s.saldoPlanejado)}</span></div></div>
-      <div class="card clickable" data-goto="receitas"><div class="icon-badge green">${icon('trendingUp',17)}</div><div class="stat-label">Receitas do mês</div><div class="stat-value pos num">${fmtCurrency(s.realizedReceitas)}</div><div class="stat-foot">Previstas: <span class="num">${fmtCurrency(s.plannedReceitas)}</span></div></div>
-      <div class="card clickable" data-goto="lancamentos"><div class="icon-badge red">${icon('trendingDown',17)}</div><div class="stat-label">Despesas do mês</div><div class="stat-value neg num">${fmtCurrency(s.realizedDespesas)}</div><div class="stat-foot">Previstas: <span class="num">${fmtCurrency(s.plannedDespesas)}</span></div></div>
-      <div class="card clickable" data-goto="metas"><div class="icon-badge yellow">${icon('target',17)}</div><div class="stat-label">Guardado (total)</div><div class="stat-value num">${fmtCurrency(guardado)}</div><div class="stat-foot">Em ${state.goals.length} meta(s)</div></div>
-    </div>
-    <div class="grid grid-4" style="margin-top:14px">
-      <div class="card clickable" data-goto="dividas"><div class="icon-badge red">${icon('trendingDown',17)}</div><div class="stat-label">Total em dívidas</div><div class="stat-value neg num">${fmtCurrency(totalDividas)}</div><div class="stat-foot">Saldo restante</div></div>
-      <div class="card clickable" data-goto="parcelamentos"><div class="icon-badge red">${icon('layers',17)}</div><div class="stat-label">Parcelas futuras</div><div class="stat-value neg num">${fmtCurrency(totalParcelasFuturas)}</div><div class="stat-foot">Restante a pagar</div></div>
-      <div class="card"><div class="icon-badge grey">${icon('sliders',17)}</div><div class="stat-label">Comprometido (dívidas + parcelas)</div><div class="stat-value num">${fmtCurrency(comprometido)}</div><div class="stat-foot">≈ ${mesesComprometido.toFixed(1)} meses da sua renda atual</div></div>
-      <div class="card"><div class="icon-badge ${acc>=0?'green':'red'}">${icon('barchart',17)}</div><div class="stat-label">Saldo acumulado</div><div class="stat-value ${acc>=0?'pos':'neg'} num">${fmtCurrency(acc)}</div><div class="stat-foot">Desde ${monthLabel(firstDataMonth())}</div></div>
-    </div>
-
-    <div class="section-title"><h2>Evolução do saldo</h2></div>
-    <div class="card"><div class="chart-box"><canvas id="chart-dashboard-balance"></canvas></div></div>
-
-    <div class="section-title"><h2>Quanto posso gastar?</h2>
-      <div class="toolbar" style="margin:0">
-        <button class="subtab ${spendWindow===7?'active':''}" data-spend-window="7" style="margin-right:8px">7 dias</button>
-        <button class="subtab ${spendWindow===15?'active':''}" data-spend-window="15" style="margin-right:8px">15 dias</button>
-        <button class="subtab ${spendWindow===30?'active':''}" data-spend-window="30" style="margin-right:8px">30 dias</button>
-        <button class="subtab ${spendWindow===60?'active':''}" data-spend-window="60">60 dias</button>
+      <div class="card clickable" data-goto="dividas">
+        <div class="stat-label">Comprometido</div>
+        <div class="dash-mid num">${fmtCurrency(pat.passivos)}</div>
+        <div class="dash-note">Dívidas ${fmtCurrency(pat.dividas)} · parcelas ${fmtCurrency(pat.parcelas)}${pat.meses>0? ` · cerca de ${pat.meses.toFixed(1).replace('.',',')} mês(es) da renda do período` : ''}.</div>
       </div>
     </div>
-    <div class="card">
-      <div class="icon-badge ${canSpend>=0?'green':'red'}">${icon('sparkles',17)}</div>
-      <div class="stat-value ${canSpend>=0?'pos':'neg'} num" style="font-size:32px">${fmtCurrency(canSpend)}</div>
-      <div class="stat-foot">Seu saldo em contas (${fmtCurrency(totalAvailable())}) já descontando tudo que ainda está pendente para pagar ou receber nos próximos ${spendWindow} dias, e reservas de metas planejadas.</div>
+
+    <div class="dash-grid dash-2">
+      <div class="card dash-chart">
+        <div class="stat-label">Como o saldo deve andar até ${fmtDM(per.to)}</div>
+        <div style="margin-top:12px">${dashChartSvg(pts)}</div>
+        <div class="dash-note">Linha cheia: o que já aconteceu. Tracejada: previsão com as contas e recebimentos já lançados.</div>
+      </div>
+      <div class="card">
+        <div class="stat-label">Próximos vencimentos</div>
+        <div style="margin-top:6px">${dashVencimentosHtml()}</div>
+      </div>
     </div>
 
-    <div class="section-title"><h2>Alertas financeiros</h2></div>
-    <div>${computeAlerts().map(a=>`<div class="alert-item ${a.sev==='rust'?'rust':''}" style="${a.sev==='green'?'background:var(--green-bg);color:var(--green)':a.sev==='grey'?'background:var(--panel-2);color:var(--ink-soft)':''}">${icon(a.sev==='green'?'checkCircle':a.sev==='grey'?'info':'alertTriangle',16)}<span>${escapeHtml(a.msg)}</span></div>`).join('')}</div>
+    <div class="dash-grid dash-3">
+      <div class="card">
+        <div class="stat-label">Entradas e saídas do período</div>
+        <div class="dash-note" style="color:var(--ink)">Receitas · ${fmtCurrency(s.plannedReceitas)} previstas</div>
+        <div class="dash-bar" style="margin-top:8px"><i style="width:${pct(s.realizedReceitas,s.plannedReceitas)}%;background:#43E88C"></i></div>
+        <div class="dash-note">Já recebeu ${fmtCurrency(s.realizedReceitas)}</div>
+        <div class="dash-note" style="color:var(--ink);margin-top:16px">Despesas · ${fmtCurrency(s.plannedDespesas)} previstas</div>
+        <div class="dash-bar" style="margin-top:8px"><i style="width:${pct(s.realizedDespesas,s.plannedDespesas)}%;background:#FF6B86"></i></div>
+        <div class="dash-note">Já pagou ${fmtCurrency(s.realizedDespesas)}</div>
+        <div class="dash-note" style="margin-top:16px">Sobra prevista: <b class="${sobra>=0? 'pos' : 'neg'}">${sobra>0? '+ ' : ''}${fmtCurrency(sobra)}</b></div>
+      </div>
+      <div class="card">
+        <div class="stat-label">Para onde vai o dinheiro</div>
+        ${dashCategoriesHtml(s.byCategory)}
+        <div class="dash-note"><a href="#" data-goto="relatorios">Ver relatórios</a></div>
+      </div>
+      <div class="card clickable" data-goto="parcelamentos">
+        <div class="stat-label">Faturas do cartão</div>
+        ${dashFaturasHtml()}
+      </div>
+    </div>
+
+    ${alerts.length? `<details class="dash-alerts"><summary>Alertas (${alerts.length})</summary><div style="margin-top:10px">${alerts.map(a=>`<div class="alert-item ${a.sev==='rust'? 'rust' : ''}">${icon(a.sev==='rust'? 'alertTriangle' : 'info',16)}<span>${escapeHtml(a.msg)}</span></div>`).join('')}</div></details>` : ''}
   `;
-  $$('#view-dashboard [data-goto]').forEach(c=>c.onclick=()=>switchView(c.dataset.goto));
+  $$('#view-dashboard [data-goto]').forEach(c=>c.onclick=(e)=>{ e.preventDefault(); switchView(c.dataset.goto); });
+  $$('#view-dashboard .dash-chip').forEach(b=>b.onclick=()=>{ dashMode = b.dataset.dmode; RENDERERS.dashboard(); });
   wireDashboardHeader();
-  $$('#view-dashboard [data-spend-window]').forEach(b=>b.onclick=()=>{ spendWindow=parseInt(b.dataset.spendWindow); RENDERERS.dashboard(); });
-  balanceEvolutionChart('chart-dashboard-balance',5,6);
 };
 function renderUpcomingList(items, startingBalance){
   if(!items.length) return `<div class="empty-state">${icon('calendar',28)}<strong>Nada por vir</strong><span>Nenhum lançamento pendente nesse período.</span></div>`;
