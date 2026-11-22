@@ -1290,13 +1290,80 @@ function dashMetrics(per){
   return {saldo, aPagar, aPagarCount:upDes.length, aReceber, atrasado, atrasadoCount:late.length, reservas,
           livre: rnd2(saldo-aPagar-reservas), fimProjetado: rnd2(saldo+aReceber-aPagar)};
 }
+const WD_SHORT = ['dom','seg','ter','qua','qui','sex','sáb'];
+function fmtDayShort(iso){ const [y,m,d] = iso.split('-').map(Number); return WD_SHORT[new Date(y,m-1,d).getDay()]+', '+fmtDM(iso); }
+function dashDueToday(){
+  // o que vence hoje e ainda está pendente: sai do saldo ao fim do dia, então aparece a partir de amanhã
+  const today = todayISO();
+  const real = state.transactions.filter(t=>t.status==='pendente' && t.date===today && (t.type==='receita' || t.type==='despesa'));
+  return real.concat(virtualEntriesBetween(addDaysToISO(today,-1), today).filter(v=>v.date===today));
+}
 function dashSeries(per){
   const today = todayISO(), pts = [];
+  const dueNet = dashDueToday().reduce((a,t)=>a+(t.type==='receita'? 1 : -1)*(Number(t.value)||0),0);
   for(let d=per.from, k=0; d<=per.to && k<400; d=addDaysToISO(d,1), k++){
-    const v = balanceAsOfDate(d);
-    if(v!==null) pts.push({date:d, value:rnd2(v), proj:d>today});
+    let v = balanceAsOfDate(d);
+    if(v===null) continue;
+    if(d>today) v += dueNet;
+    pts.push({date:d, value:rnd2(v), proj:d>today});
   }
   return pts;
+}
+function dashDayInfo(pts, i){
+  const today = todayISO(), p = pts[i], d = p.date;
+  const mk = t=>({description:t.description, type:t.type, value:Number(t.value)||0, note:t.note||''});
+  const isFlow = t=>t.type==='receita' || t.type==='despesa';
+  let items;
+  if(d<=today) items = state.transactions.filter(t=>isFlow(t) && t.status==='pago' && cashDate(t)===d).map(mk);
+  else {
+    items = state.transactions.filter(t=>isFlow(t) && t.status==='pendente' && t.date===d).map(mk)
+      .concat(virtualEntriesBetween(addDaysToISO(d,-1), d).filter(v=>v.date===d).map(mk));
+    if(d===addDaysToISO(today,1)) items = dashDueToday().map(t=>({...mk(t), note:'vence hoje'})).concat(items);
+  }
+  items.sort((a,b)=>b.value-a.value);
+  return {date:d, label:fmtDayShort(d), value:p.value, delta: i>0? rnd2(p.value-pts[i-1].value) : null, proj:p.proj, isToday:d===today, items};
+}
+function dashTipHtml(info){
+  const tag = info.isToday? 'Hoje' : info.proj? 'Previsto' : 'Já aconteceu';
+  const signed = (v)=>(v<0? '−' : '+')+fmtCurrency(Math.abs(v));
+  const delta = (info.delta===null || info.delta===0)? '' : `<div class="dc-tip-delta ${signClass(info.delta)}">${signed(info.delta)} no dia</div>`;
+  const list = info.items.slice(0,4).map(x=>`<li><span>${escapeHtml(x.description)}${x.note? ` <em>(${escapeHtml(x.note)})</em>` : ''}</span><b class="${x.type==='receita'? 'pos' : 'neg'}">${x.type==='receita'? '+' : '−'}${fmtCurrency(x.value)}</b></li>`).join('');
+  const more = info.items.length>4? `<li class="dc-more">+ ${info.items.length-4} a mais</li>` : '';
+  return `<div class="dc-tip-head"><b>${escapeHtml(info.label)}</b><span class="badge grey">${tag}</span></div>`
+    + `<div class="dc-tip-val num ${signClass(info.value)}">${fmtCurrency(info.value)}</div>${delta}`
+    + (list || more? `<ul class="dc-tip-list">${list}${more}</ul>` : '');
+}
+function wireDashChart(wrap, pts){
+  const svg = wrap.querySelector('svg.dc-svg'), tip = wrap.querySelector('.dc-tip');
+  if(!svg || !tip || pts.length<2) return;
+  const W = Number(svg.dataset.w), H = Number(svg.dataset.h), ys = svg.dataset.ys.split(',').map(Number), n = pts.length;
+  const guide = svg.querySelector('.dc-guide'), dot = svg.querySelector('.dc-hover');
+  const ti = Math.max(0, pts.findIndex(p=>p.date===todayISO()));
+  let cur = -1;
+  const show = (i)=>{
+    i = Math.max(0, Math.min(n-1, i)); cur = i;
+    const x = i/(n-1)*W, y = ys[i];
+    guide.setAttribute('x1',x); guide.setAttribute('x2',x); guide.setAttribute('visibility','visible');
+    dot.setAttribute('cx',x); dot.setAttribute('cy',y); dot.setAttribute('visibility','visible');
+    tip.innerHTML = dashTipHtml(dashDayInfo(pts,i)); tip.hidden = false;
+    const r = svg.getBoundingClientRect(), tw = tip.offsetWidth || 200, th = tip.offsetHeight || 120;
+    const px = x/W*r.width, py = y/H*r.height;
+    let left = px+16; if(left+tw>r.width) left = px-tw-16; if(left<0) left = 0;
+    let top = py-th-12; if(top<0) top = py+16;
+    tip.style.left = left+'px'; tip.style.top = top+'px';
+  };
+  const hide = ()=>{ cur = -1; guide.setAttribute('visibility','hidden'); dot.setAttribute('visibility','hidden'); tip.hidden = true; };
+  const idxAt = (cx)=>{ const r = svg.getBoundingClientRect(); return r.width? Math.round((cx-r.left)/r.width*(n-1)) : 0; };
+  svg.addEventListener('pointermove', e=>show(idxAt(e.clientX)));
+  svg.addEventListener('pointerdown', e=>show(idxAt(e.clientX)));
+  svg.addEventListener('pointerleave', e=>{ if(e.pointerType!=='touch') hide(); });   // no toque, o cartão fica até você tocar de novo
+  svg.addEventListener('focus', ()=>{ if(cur<0) show(ti); });
+  svg.addEventListener('blur', hide);
+  svg.addEventListener('keydown', e=>{
+    if(e.key==='ArrowRight'){ e.preventDefault(); show(cur<0? ti : cur+1); }
+    else if(e.key==='ArrowLeft'){ e.preventDefault(); show(cur<0? ti : cur-1); }
+    else if(e.key==='Escape') hide();
+  });
 }
 function dashChartSvg(pts){
   const today = todayISO();
@@ -1333,15 +1400,15 @@ function dashChartSvg(pts){
   if(bi>0) marks += txt(X(bi), Y(vals[bi])-12, `entra ${fmtCurrency(rnd2(bv))} em ${fmtDM(pts[bi].date)}`, 'dc-pos-t');
   const zero = lo<0? `<path d="M0 ${f(Y(0))}H${W}" class="dc-zero"/><text x="4" y="${f(Y(0)-5)}" class="dc-neg-t">R$ 0</text>` : '';
   const grid = [0.25,0.5,0.75].map(g=>`<path d="M0 ${f(top+(H-top-bot)*g)}H${W}"/>`).join('');
-  const hits = pts.map((p,i)=>`<circle cx="${f(X(i))}" cy="${f(Y(p.value))}" r="9" fill="transparent"><title>${fmtDM(p.date)} · ${fmtCurrency(p.value)}${p.proj? ' (previsto)' : ''}</title></circle>`).join('');
+  const ys = pts.map(p=>Y(p.value).toFixed(1)).join(',');
   const last = pts[n-1];
   const aria = `Saldo ${pts[split].date===today? 'hoje '+fmtCurrency(vals[split])+', ' : ''}${mi>split? 'menor saldo '+fmtCurrency(vals[mi])+' em '+fmtDM(pts[mi].date)+', ' : ''}termina em ${fmtCurrency(last.value)} em ${fmtDM(last.date)}`;
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${escapeHtml(aria)}" style="display:block;font-size:12px">
+  return `<svg class="dc-svg" viewBox="0 0 ${W} ${H}" width="100%" role="img" tabindex="0" aria-label="${escapeHtml(aria)}" data-w="${W}" data-h="${H}" data-ys="${ys}" style="display:block;font-size:12px">
     <g class="dc-grid">${grid}</g>${zero}
     <path d="${area}" class="dc-area"/>
     ${past? `<path d="${past}" class="dc-past"/>` : ''}
     ${fut? `<path d="${fut}" class="dc-fut"/>` : ''}
-    <g class="dc-text">${marks}<text x="2" y="${H-8}">${fmtDM(pts[0].date)}</text><text x="${W-2}" y="${H-8}" text-anchor="end">${fmtDM(last.date)}</text></g>${hits}</svg>`;
+    <g class="dc-text">${marks}<text x="2" y="${H-8}">${fmtDM(pts[0].date)}</text><text x="${W-2}" y="${H-8}" text-anchor="end">${fmtDM(last.date)}</text></g><line class="dc-guide" x1="0" x2="0" y1="${top-12}" y2="${H-bot}" visibility="hidden"/><circle class="dc-hover" r="6" cx="0" cy="0" visibility="hidden"/></svg>`;
 }
 function dashCategoriesHtml(byCategory){
   const e = Object.entries(byCategory).sort((a,b)=>b[1]-a[1]);
@@ -1444,8 +1511,8 @@ RENDERERS.dashboard = function(){
     <div class="dash-grid dash-2">
       <div class="card dash-chart">
         <div class="stat-label">Como o saldo deve andar até ${fmtDM(per.to)}</div>
-        <div style="margin-top:12px">${dashChartSvg(pts)}</div>
-        <div class="dash-note">Linha cheia: o que já aconteceu. Tracejada: previsão com as contas e recebimentos já lançados.</div>
+        <div class="dc-wrap">${dashChartSvg(pts)}<div class="dc-tip" hidden></div></div>
+        <div class="dash-note">Passe o mouse (ou toque) no gráfico para ver cada dia. Linha cheia: o que já aconteceu. Tracejada: previsão com as contas e recebimentos já lançados.</div>
       </div>
       <div class="card">
         <div class="stat-label">Próximos vencimentos</div>
@@ -1480,6 +1547,7 @@ RENDERERS.dashboard = function(){
   $$('#view-dashboard [data-goto]').forEach(c=>c.onclick=(e)=>{ e.preventDefault(); switchView(c.dataset.goto); });
   $$('#view-dashboard .dash-chip').forEach(b=>b.onclick=()=>{ dashMode = b.dataset.dmode; RENDERERS.dashboard(); });
   wireDashboardHeader();
+  const dcw = $('#view-dashboard .dc-wrap'); if(dcw) wireDashChart(dcw, pts);
 };
 function renderUpcomingList(items, startingBalance){
   if(!items.length) return `<div class="empty-state">${icon('calendar',28)}<strong>Nada por vir</strong><span>Nenhum lançamento pendente nesse período.</span></div>`;
