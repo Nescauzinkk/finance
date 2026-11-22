@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Kivo — Controle Financeiro Pessoal</title>
 <link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#05030A">
+<meta name="theme-color" content="#0C0C10">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -14,6 +14,7 @@
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script>(function(){try{var t=localStorage.getItem("kivo-theme");if(t!=="light"&&t!=="dark"){t=(window.matchMedia&&window.matchMedia("(prefers-color-scheme: light)").matches)?"light":"dark";}document.documentElement.setAttribute("data-theme",t);}catch(e){document.documentElement.setAttribute("data-theme","dark");}})();</script>
 <link rel="stylesheet" href="/src/style.css">
 </head>
 <body>
@@ -44,6 +45,7 @@
       <div class="topbar-right">
         <button class="btn primary" id="btn-quick-add" data-icon="plus"><span class="label">Novo</span></button>
         <span id="sidebar-user" class="topbar-user"></span>
+        <button class="nav-item" id="btn-theme" title="Mudar para o tema claro" aria-label="Mudar para o tema claro"></button>
         <button class="nav-item" data-view="configuracoes" data-icon="sliders" title="Configurações"></button>
         <button class="nav-item" id="btn-logout" data-icon="logout"><span class="label">Sair</span></button>
       </div>

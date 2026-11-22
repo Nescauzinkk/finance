@@ -5,6 +5,15 @@ const $ = (sel,root=document)=>root.querySelector(sel);
 const $$ = (sel,root=document)=>Array.from(root.querySelectorAll(sel));
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8);}
 function pad(n){return String(n).padStart(2,'0');}
+function signClass(v){ v = Number(v)||0; return v>0? 'pos' : v<0? 'neg' : ''; }
+function txClass(t){ return t.type==='receita'? 'pos' : t.type==='despesa'? 'neg' : t.type==='ajuste'? signClass(t.value) : ''; }
+function txMoney(t){   // valor com sinal: a cor não é a única pista (ajuda quem enxerga mal as cores)
+  const v = Number(t.value)||0;
+  if(t.type==='receita') return '+'+fmtCurrency(v);
+  if(t.type==='despesa') return '−'+fmtCurrency(v);
+  if(t.type==='ajuste') return (v>0? '+' : v<0? '−' : '')+fmtCurrency(Math.abs(v));
+  return fmtCurrency(v);
+}
 function fmtCurrency(v){
   v = Number(v)||0;
   const neg = v<0; v=Math.abs(v);
@@ -76,6 +85,8 @@ const ICON_PATHS = {
   chevronLeft:'<path d="M15 18l-6-6 6-6"/>',
   chevronRight:'<path d="M9 18l6-6-6-6"/>',
   chevronDown:'<path d="M6 9l6 6 6-6"/>',
+  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
+  moon:'<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
   undo:'<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/>',
   alertTriangle:'<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
   checkCircle:'<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/>',
@@ -96,9 +107,49 @@ function emptyRow(colspan,iconName,title,subtitle){
 }
 /* ===================== CHARTS ===================== */
 const CHART_COLORS = {
-  green:'#39E27A', red:'#FF4D4D', yellow:'#FFD23F',
-  ink:'#F2F3F0', inkSoft:'#A79FC0', line:'rgba(176,102,255,.16)', panel:'#151617'
+  green:'#3DDC97', red:'#FF6B7A', yellow:'#F5C451', accent:'#7658F4',
+  ink:'#ECECF1', inkSoft:'#A3A3B2', line:'#2A2A34', panel:'#14141A',
+  accentFill:'rgba(118,88,244,.75)', greenFill:'rgba(61,220,151,.12)', greenBar:'rgba(61,220,151,.75)', yellowBar:'rgba(245,196,81,.75)'
 };
+function applyChartTheme(){
+  // lê as cores do tema ativo (variáveis do CSS) para os gráficos acompanharem o claro/escuro
+  if(typeof getComputedStyle==='undefined' || typeof document==='undefined') return;
+  const cs = getComputedStyle(document.documentElement);
+  const v = n=>cs.getPropertyValue(n).trim();
+  const rgba = (n,a)=>{ const p = v(n).split(/[\s,]+/).filter(Boolean); return p.length===3? `rgba(${p.join(',')},${a})` : null; };
+  const set = (k,val)=>{ if(val) CHART_COLORS[k] = val; };
+  set('green',v('--pos')); set('red',v('--neg')); set('yellow',v('--warn')); set('accent',v('--accent'));
+  set('ink',v('--ink')); set('inkSoft',v('--ink-soft')); set('line',v('--line')); set('panel',v('--surface'));
+  set('accentFill',rgba('--accent-rgb',.75)); set('greenFill',rgba('--pos-rgb',.12)); set('greenBar',rgba('--pos-rgb',.75)); set('yellowBar',rgba('--warn-rgb',.75));
+  Chart.defaults.color = CHART_COLORS.inkSoft;
+  Chart.defaults.borderColor = CHART_COLORS.line;
+}
+const THEME_KEY = 'kivo-theme';
+function currentTheme(){ return document.documentElement.getAttribute('data-theme')==='light'? 'light' : 'dark'; }
+function applyTheme(t, opts){
+  t = t==='light'? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', t);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if(meta) meta.setAttribute('content', t==='light'? '#F5F5F8' : '#0C0C10');
+  const b = document.getElementById('btn-theme');
+  if(b){
+    const next = t==='light'? 'Mudar para o tema escuro' : 'Mudar para o tema claro';
+    b.innerHTML = icon(t==='light'? 'moon' : 'sun', 18); b.title = next; b.setAttribute('aria-label', next);
+  }
+  applyChartTheme();
+  if(opts && opts.save){ try{ localStorage.setItem(THEME_KEY, t); }catch(e){} }
+  if(opts && opts.rerender && typeof renderAll==='function') renderAll();
+}
+function toggleTheme(){ applyTheme(currentTheme()==='light'? 'dark' : 'light', {save:true, rerender:true}); }
+function initTheme(){
+  applyTheme(currentTheme());
+  const b = document.getElementById('btn-theme'); if(b) b.onclick = toggleTheme;
+  try{
+    const mq = window.matchMedia('(prefers-color-scheme: light)');
+    const follow = e=>{ let saved = null; try{ saved = localStorage.getItem(THEME_KEY); }catch(x){} if(!saved) applyTheme(e.matches? 'light' : 'dark', {rerender:true}); };
+    if(mq.addEventListener) mq.addEventListener('change', follow);
+  }catch(e){}
+}
 const chartInstances = {};
 Chart.defaults.color = CHART_COLORS.inkSoft;
 Chart.defaults.font.family = "'Plus Jakarta Sans', sans-serif";
@@ -130,7 +181,7 @@ function balanceEvolutionChart(canvasId, monthsBack, monthsFwd){
   renderChart(canvasId,{
     type:'line',
     data:{ labels, datasets:[
-      { label:'Saldo do mês', data:saldos, borderColor:CHART_COLORS.green, backgroundColor:'rgba(57,226,122,.12)', tension:.3, fill:true, pointRadius:3, pointBackgroundColor:CHART_COLORS.green },
+      { label:'Saldo do mês', data:saldos, borderColor:CHART_COLORS.green, backgroundColor:CHART_COLORS.greenFill, tension:.3, fill:true, pointRadius:3, pointBackgroundColor:CHART_COLORS.green },
       { label:'Saldo acumulado', data:acumulados, borderColor:CHART_COLORS.yellow, backgroundColor:'transparent', borderDash:[4,3], tension:.3, pointRadius:2, pointBackgroundColor:CHART_COLORS.yellow }
     ]},
     options:{
@@ -151,7 +202,7 @@ function categoryBarChart(canvasId, monthKey){
     type:'bar',
     data:{ labels: top.map(r=>r.cat), datasets:[{
       label:'Despesas', data: top.map(r=>Math.round(r.val*100)/100),
-      backgroundColor: top.map(r=> r.essential? 'rgba(255,210,63,.75)' : 'rgba(57,226,122,.75)'),
+      backgroundColor: top.map(r=> r.essential? CHART_COLORS.yellowBar : CHART_COLORS.greenBar),
       borderRadius:5, maxBarThickness:34
     }]},
     options:{
@@ -1262,35 +1313,35 @@ function dashChartSvg(pts){
   const past = split>0? seg(0,split) : '', fut = split<n-1? seg(split,n-1) : '';
   const area = seg(0,n-1)+`V${H-bot}H0Z`;
   const anchor = x=>x>W*0.62? 'end' : 'start', dx = x=>x>W*0.62? -9 : 9;
-  const txt = (x,y,t,fill)=>`<text x="${f(x+dx(x))}" y="${f(y)}" text-anchor="${anchor(x)}"${fill? ` fill="${fill}"` : ''}>${t}</text>`;
+  const txt = (x,y,t,cls)=>`<text x="${f(x+dx(x))}" y="${f(y)}" text-anchor="${anchor(x)}"${cls? ` class="${cls}"` : ''}>${t}</text>`;
   let marks = '';
   // hoje
   const xt = X(split), yt = Y(vals[split]);
   if(pts[split].date===today){
-    if(split>0) marks += `<path d="M${f(xt)} ${top-12}V${H-bot}" stroke="#A99FC4" stroke-dasharray="4 5"/>`;
-    marks += `<circle cx="${f(xt)}" cy="${f(yt)}" r="6" fill="#fff"/>` + txt(xt, yt-12, `hoje · ${fmtCurrency(vals[split])}`);
+    if(split>0) marks += `<path d="M${f(xt)} ${top-12}V${H-bot}" class="dc-today"/>`;
+    marks += `<circle cx="${f(xt)}" cy="${f(yt)}" r="6" class="dc-dot"/>` + txt(xt, yt-12, `hoje · ${fmtCurrency(vals[split])}`);
   }
   // menor saldo da previsão
   let mi = split;
   for(let i=split;i<n;i++) if(vals[i]<vals[mi]) mi = i;
   if(mi>split && vals[mi]<vals[split]){
-    marks += `<circle cx="${f(X(mi))}" cy="${f(Y(vals[mi]))}" r="6" fill="#FF6B86"/>` + txt(X(mi), Y(vals[mi])+22, `menor saldo · ${fmtCurrency(vals[mi])} (${fmtDM(pts[mi].date)})`, '#FF8FA3');
+    marks += `<circle cx="${f(X(mi))}" cy="${f(Y(vals[mi]))}" r="6" class="dc-min"/>` + txt(X(mi), Y(vals[mi])+22, `menor saldo · ${fmtCurrency(vals[mi])} (${fmtDM(pts[mi].date)})`, 'dc-neg-t');
   }
   // maior entrada prevista
   let bi = -1, bv = 0;
   for(let i=split+1;i<n;i++){ const d = vals[i]-vals[i-1]; if(d>bv){ bv = d; bi = i; } }
-  if(bi>0) marks += txt(X(bi), Y(vals[bi])-12, `entra ${fmtCurrency(rnd2(bv))} em ${fmtDM(pts[bi].date)}`, '#43E88C');
-  const zero = lo<0? `<path d="M0 ${f(Y(0))}H${W}" stroke="#FF6B86" stroke-dasharray="3 4"/><text x="4" y="${f(Y(0)-5)}" fill="#FF8FA3">R$ 0</text>` : '';
+  if(bi>0) marks += txt(X(bi), Y(vals[bi])-12, `entra ${fmtCurrency(rnd2(bv))} em ${fmtDM(pts[bi].date)}`, 'dc-pos-t');
+  const zero = lo<0? `<path d="M0 ${f(Y(0))}H${W}" class="dc-zero"/><text x="4" y="${f(Y(0)-5)}" class="dc-neg-t">R$ 0</text>` : '';
   const grid = [0.25,0.5,0.75].map(g=>`<path d="M0 ${f(top+(H-top-bot)*g)}H${W}"/>`).join('');
   const hits = pts.map((p,i)=>`<circle cx="${f(X(i))}" cy="${f(Y(p.value))}" r="9" fill="transparent"><title>${fmtDM(p.date)} · ${fmtCurrency(p.value)}${p.proj? ' (previsto)' : ''}</title></circle>`).join('');
   const last = pts[n-1];
   const aria = `Saldo ${pts[split].date===today? 'hoje '+fmtCurrency(vals[split])+', ' : ''}${mi>split? 'menor saldo '+fmtCurrency(vals[mi])+' em '+fmtDM(pts[mi].date)+', ' : ''}termina em ${fmtCurrency(last.value)} em ${fmtDM(last.date)}`;
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${escapeHtml(aria)}" style="display:block;font-size:12px">
-    <g stroke="rgba(176,102,255,.14)">${grid}</g>${zero}
-    <path d="${area}" fill="rgba(162,75,255,.16)"/>
-    ${past? `<path d="${past}" fill="none" stroke="#C58BFF" stroke-width="3"/>` : ''}
-    ${fut? `<path d="${fut}" fill="none" stroke="#A97BFF" stroke-width="3" stroke-dasharray="7 5"/>` : ''}
-    <g fill="#A99FC4">${marks}<text x="2" y="${H-8}">${fmtDM(pts[0].date)}</text><text x="${W-2}" y="${H-8}" text-anchor="end">${fmtDM(last.date)}</text></g>${hits}</svg>`;
+    <g class="dc-grid">${grid}</g>${zero}
+    <path d="${area}" class="dc-area"/>
+    ${past? `<path d="${past}" class="dc-past"/>` : ''}
+    ${fut? `<path d="${fut}" class="dc-fut"/>` : ''}
+    <g class="dc-text">${marks}<text x="2" y="${H-8}">${fmtDM(pts[0].date)}</text><text x="${W-2}" y="${H-8}" text-anchor="end">${fmtDM(last.date)}</text></g>${hits}</svg>`;
 }
 function dashCategoriesHtml(byCategory){
   const e = Object.entries(byCategory).sort((a,b)=>b[1]-a[1]);
@@ -1298,7 +1349,7 @@ function dashCategoriesHtml(byCategory){
   const rest = e.slice(5).reduce((x,[,v])=>x+v,0);
   const rows = e.slice(0,5).concat(rest>0? [['Outras',rest,true]] : []);
   const max = Math.max(...rows.map(r=>r[1]));
-  return rows.map(([nm,v,other])=>`<div class="dash-cr"><span class="dash-cat" title="${escapeHtml(nm)}">${escapeHtml(nm)}</span><div class="dash-bar"><i style="width:${max? Math.max(3,v/max*100).toFixed(0) : 0}%;background:${other? 'rgba(197,139,255,.5)' : '#C58BFF'}"></i></div><span class="num">${fmtCurrency(v)}</span></div>`).join('');
+  return rows.map(([nm,v,other])=>`<div class="dash-cr"><span class="dash-cat" title="${escapeHtml(nm)}">${escapeHtml(nm)}</span><div class="dash-bar"><i style="width:${max? Math.max(3,v/max*100).toFixed(0) : 0}%;background:${other? 'rgb(var(--accent-rgb) / .45)' : 'var(--accent)'}"></i></div><span class="num neg">${fmtCurrency(v)}</span></div>`).join('');
 }
 function dashVencimentosHtml(){
   const today = todayISO();
@@ -1311,7 +1362,7 @@ function dashVencimentosHtml(){
     let tag;
     if(t.date<today) tag = '<span class="badge rust">Atrasada</span>';
     else { const n = daysBetween(today,t.date); tag = `<span class="badge ${n<=7? 'gold' : 'grey'}">${n===0? 'hoje' : n===1? 'amanhã' : 'em '+n+' dias'}</span>`; }
-    return `<div class="dash-li"><span>${escapeHtml(t.description)}</span><span>${tag} <b class="num">${fmtCurrency(t.value)}</b></span></div>`;
+    return `<div class="dash-li"><span>${escapeHtml(t.description)}</span><span>${tag} <b class="num neg">${fmtCurrency(t.value)}</b></span></div>`;
   }).join('');
   return rows+`<div class="dash-note">${all.length>5? '+ '+(all.length-5)+' a mais · ' : ''}<a href="#" data-goto="planejamento">Ver no Orçamento</a></div>`;
 }
@@ -1328,11 +1379,11 @@ function dashFaturasHtml(){
   const blocks = state.cards.slice(0,2).map(card=>{
     const list = cardInvoices(card).filter(i=>!i.paid).slice(0,3);
     return `<div style="margin-top:12px"><b>${escapeHtml(card.name)}</b> <span class="dash-note" style="margin:0">· fecha dia ${card.closingDay||'—'} · vence dia ${card.dueDay||'—'}</span></div>`
-      + list.map(i=>`<div class="dash-li"><span>${escapeHtml(monthLabel(i.dueDate.slice(0,7)))} ${invoiceBadge(i)}</span><b class="num">${fmtCurrency(i.total)}</b></div>`).join('');
+      + list.map(i=>`<div class="dash-li"><span>${escapeHtml(monthLabel(i.dueDate.slice(0,7)))} ${invoiceBadge(i)}</span><b class="num neg">${fmtCurrency(i.total)}</b></div>`).join('');
   }).join('');
   const more = state.cards.length>2? `<div class="dash-note">+ ${state.cards.length-2} cartão(ões) em Faturas</div>` : '';
   const none = !state.cards.length? '<div class="dash-note">Cadastre um cartão para acompanhar as faturas.</div>' : '';
-  const foot = pf.value>0? `<div class="dash-li"><span>Parcelas futuras <span class="badge grey">${pf.count} parcela${pf.count===1? '' : 's'}</span></span><b class="num">${fmtCurrency(pf.value)}</b></div>` : '';
+  const foot = pf.value>0? `<div class="dash-li"><span>Parcelas futuras <span class="badge grey">${pf.count} parcela${pf.count===1? '' : 's'}</span></span><b class="num neg">${fmtCurrency(pf.value)}</b></div>` : '';
   return blocks+more+none+foot;
 }
 function dashPatrimonio(rendaPeriodo){
@@ -1367,7 +1418,7 @@ RENDERERS.dashboard = function(){
       </div>
       <div class="card clickable" data-goto="contas">
         <div class="stat-label">Saldo em contas</div>
-        <div class="dash-mid num">${fmtCurrency(m.saldo)}</div>
+        <div class="dash-mid ${signClass(m.saldo)} num">${fmtCurrency(m.saldo)}</div>
         <div class="dash-note">${escapeHtml(accNames.slice(0,3).join(' e ') || 'Nenhuma conta ativa')}</div>
       </div>
       <div class="card clickable" data-goto="planejamento">
@@ -1385,7 +1436,7 @@ RENDERERS.dashboard = function(){
       </div>
       <div class="card clickable" data-goto="dividas">
         <div class="stat-label">Comprometido</div>
-        <div class="dash-mid num">${fmtCurrency(pat.passivos)}</div>
+        <div class="dash-mid ${pat.passivos>0? 'neg' : ''} num">${fmtCurrency(pat.passivos)}</div>
         <div class="dash-note">Dívidas ${fmtCurrency(pat.dividas)} · parcelas ${fmtCurrency(pat.parcelas)}${pat.meses>0? ` · cerca de ${pat.meses.toFixed(1).replace('.',',')} mês(es) da renda do período` : ''}.</div>
       </div>
     </div>
@@ -1405,12 +1456,12 @@ RENDERERS.dashboard = function(){
     <div class="dash-grid dash-3">
       <div class="card">
         <div class="stat-label">Entradas e saídas do período</div>
-        <div class="dash-note" style="color:var(--ink)">Receitas · ${fmtCurrency(s.plannedReceitas)} previstas</div>
-        <div class="dash-bar" style="margin-top:8px"><i style="width:${pct(s.realizedReceitas,s.plannedReceitas)}%;background:#43E88C"></i></div>
-        <div class="dash-note">Já recebeu ${fmtCurrency(s.realizedReceitas)}</div>
-        <div class="dash-note" style="color:var(--ink);margin-top:16px">Despesas · ${fmtCurrency(s.plannedDespesas)} previstas</div>
-        <div class="dash-bar" style="margin-top:8px"><i style="width:${pct(s.realizedDespesas,s.plannedDespesas)}%;background:#FF6B86"></i></div>
-        <div class="dash-note">Já pagou ${fmtCurrency(s.realizedDespesas)}</div>
+        <div class="dash-note" style="color:var(--ink)">Receitas · <b class="pos">${fmtCurrency(s.plannedReceitas)}</b> previstas</div>
+        <div class="dash-bar" style="margin-top:8px"><i style="width:${pct(s.realizedReceitas,s.plannedReceitas)}%;background:var(--pos)"></i></div>
+        <div class="dash-note">Já recebeu <b class="pos">${fmtCurrency(s.realizedReceitas)}</b></div>
+        <div class="dash-note" style="color:var(--ink);margin-top:16px">Despesas · <b class="neg">${fmtCurrency(s.plannedDespesas)}</b> previstas</div>
+        <div class="dash-bar" style="margin-top:8px"><i style="width:${pct(s.realizedDespesas,s.plannedDespesas)}%;background:var(--neg)"></i></div>
+        <div class="dash-note">Já pagou <b class="neg">${fmtCurrency(s.realizedDespesas)}</b></div>
         <div class="dash-note" style="margin-top:16px">Sobra prevista: <b class="${sobra>=0? 'pos' : 'neg'}">${sobra>0? '+ ' : ''}${fmtCurrency(sobra)}</b></div>
       </div>
       <div class="card">
@@ -1493,14 +1544,14 @@ function lancSummaryHtml(rows, per, anyFilter){
   return `<div class="lanc-summary">
     <div class="grid grid-4">
       <div class="card"><div class="stat-label">Receitas</div><div class="stat-value pos num">${fmtCurrency(s.rec.total)}</div>
-        <div class="stat-foot">Recebido ${fmtCurrency(s.rec.done)} · A receber ${fmtCurrency(s.rec.pend)}</div><div class="stat-foot">${s.rec.n} lançamento(s)</div></div>
+        <div class="stat-foot">Recebido <b class="pos">${fmtCurrency(s.rec.done)}</b> · A receber <b class="pos">${fmtCurrency(s.rec.pend)}</b></div><div class="stat-foot">${s.rec.n} lançamento(s)</div></div>
       <div class="card"><div class="stat-label">Despesas</div><div class="stat-value neg num">${fmtCurrency(s.des.total)}</div>
-        <div class="stat-foot">Pago ${fmtCurrency(s.des.done)} · A pagar ${fmtCurrency(s.des.pend)}</div><div class="stat-foot">${s.des.n} lançamento(s)</div></div>
+        <div class="stat-foot">Pago <b class="neg">${fmtCurrency(s.des.done)}</b> · A pagar <b class="neg">${fmtCurrency(s.des.pend)}</b></div><div class="stat-foot">${s.des.n} lançamento(s)</div></div>
       <div class="card"><div class="stat-label">Saldo do período</div><div class="stat-value ${s.saldo>=0?'pos':'neg'} num">${fmtCurrency(s.saldo)}</div>
-        <div class="stat-foot">Realizado ${fmtCurrency(s.saldoDone)} · Pendente ${fmtCurrency(s.saldoPend)}</div><div class="stat-foot">Receitas − despesas</div></div>
+        <div class="stat-foot">Realizado <b class="${signClass(s.saldoDone)}">${fmtCurrency(s.saldoDone)}</b> · Pendente <b class="${signClass(s.saldoPend)}">${fmtCurrency(s.saldoPend)}</b></div><div class="stat-foot">Receitas − despesas</div></div>
       <div class="card"><div class="stat-label">Destaques</div><div class="stat-value num" style="font-size:20px">${s.count} na lista</div>
-        <div class="stat-foot">${s.topD? 'Maior despesa: '+escapeHtml(s.topD.description)+' · '+fmtCurrency(s.topD.value) : 'Sem despesas'}</div>
-        <div class="stat-foot">${s.topR? 'Maior receita: '+escapeHtml(s.topR.description)+' · '+fmtCurrency(s.topR.value) : 'Sem receitas'}</div></div>
+        <div class="stat-foot">${s.topD? 'Maior despesa: '+escapeHtml(s.topD.description)+' · <b class="neg">'+fmtCurrency(s.topD.value)+'</b>' : 'Sem despesas'}</div>
+        <div class="stat-foot">${s.topR? 'Maior receita: '+escapeHtml(s.topR.description)+' · <b class="pos">'+fmtCurrency(s.topR.value)+'</b>' : 'Sem receitas'}</div></div>
     </div>
     <div class="help-text" style="margin:8px 0 0">${escapeHtml(per.label)}${anyFilter? ' · somas dos lançamentos filtrados' : ''}${s.skipped? ` · ${s.skipped} transferência(s)/ajuste(s) não entram nas somas` : ''} · vale a data em que o dinheiro mexeu.</div>
     <details class="lanc-breakdown"><summary>Ver por categoria</summary>
@@ -1572,7 +1623,7 @@ RENDERERS.lancamentos = function(){
       <td>${escapeHtml(t.description)}${t.source!=='manual'?`<span class="badge grey" style="margin-left:6px">${sourceLabel(t.source)}</span>`:''}</td>
       <td>${escapeHtml(t.category||'—')}</td>
       <td>${typeBadge(t.type)}</td>
-      <td class="right num">${fmtCurrency(t.value)}</td>
+      <td class="right num ${txClass(t)}">${txMoney(t)}</td>
       <td>${escapeHtml(t.paymentMethod||'—')}</td>
       <td>${t.status==='pago'?'<span class="badge green">Pago</span>':'<span class="badge gold">Pendente</span>'}${paidNote(t)}</td>
       <td>${t.type==='ajuste'? '' : `<button class="icon-btn" data-edit="${t.id}" title="Editar">${icon('edit',15)}</button><button class="icon-btn" data-dup="${t.id}" title="Duplicar">${icon('copy',15)}</button>`}${undoButtonHtml(t)}<button class="icon-btn" data-del="${t.id}" title="Excluir">${icon('trash',15)}</button></td>
@@ -1834,7 +1885,7 @@ RENDERERS.planejamento = function(){
         <td>${escapeHtml(t.description)}${t.source!=='manual'?`<span class="badge grey" style="margin-left:6px">${sourceLabel(t.source)}</span>`:''}</td>
         <td>${escapeHtml(t.category||'—')}</td>
         <td>${typeBadge(t.type)}</td>
-        <td class="right num">${fmtCurrency(t.value)}</td>
+        <td class="right num ${txClass(t)}">${txMoney(t)}</td>
         <td>${t.virtual? '<span class="badge grey" title="Previsão da recorrência — vira lançamento uns 3 meses antes da data">Previsto</span>' : (t.status==='pago'?'<span class="badge green">Pago</span>':'<span class="badge gold">Pendente</span>')+paidNote(t)}</td>
         <td>${t.type==='ajuste'? '' : t.virtual? `<button class="icon-btn" data-edit-src="${t.source}" data-src-id="${t.sourceId}" title="Editar a recorrência">${icon('edit',15)}</button>` : `<button class="icon-btn" data-edit-day="${t.id}" title="Editar">${icon('edit',15)}</button>`+undoButtonHtml(t)}</td>
       </tr>`).join('') : emptyRow(6,'calendar','Nada nesse dia','Nenhum lançamento registrado para essa data.')}</tbody>
@@ -1849,7 +1900,7 @@ RENDERERS.planejamento = function(){
     <div class="card clickable" data-goto="contas" style="margin-bottom:1px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
       <div>
         <div class="stat-label">Saldo total em contas</div>
-        <div class="stat-value num">${fmtCurrency(totalAvailable())}</div>
+        <div class="stat-value ${signClass(totalAvailable())} num">${fmtCurrency(totalAvailable())}</div>
         <div class="stat-foot">${state.accounts.length} conta(s) · marcar um lançamento como pago ajusta o saldo automaticamente</div>
       </div>
       <span class="btn small">${icon('creditcard',13)} Ver contas</span>
@@ -1966,7 +2017,7 @@ RENDERERS.contas = function(){
     const bal = accountBalance(a.id);
     return `<div class="card">
       <div class="stat-label">${escapeHtml(a.name)} ${a.status==='inativa'?'<span class="badge grey">Inativa</span>':''}</div>
-      <div class="stat-value ${bal>=0?'pos':'neg'} num">${fmtCurrency(bal)}</div>
+      <div class="stat-value ${signClass(bal)} num">${fmtCurrency(bal)}</div>
       <div class="stat-foot">${escapeHtml(a.institution||typeLabel(a.type))} · saldo inicial ${fmtCurrency(a.initialBalance)} em ${fmtDate(accountStartISO(a))}</div>
       <div class="stat-foot">${a.lastCheckedAt? 'Conferido com o banco em '+fmtDate(localISODate(a.lastCheckedAt)) : 'Ainda não conferido com o banco'}</div>
       ${excludedBanner(a)}
@@ -2068,7 +2119,7 @@ RENDERERS.cartao = function(){
     const pct = c.limit>0? Math.min(used/c.limit*100,100):0;
     return `<div class="card">
       <div class="stat-label">${escapeHtml(c.name)}</div>
-      <div class="stat-value num">${fmtCurrency(c.limit-used)}</div>
+      <div class="stat-value ${signClass(c.limit-used)} num">${fmtCurrency(c.limit-used)}</div>
       <div class="stat-foot">disponível de ${fmtCurrency(c.limit)}</div>
       <div class="progress" style="margin-top:10px"><div style="width:${pct}%;background:${pct>85?'var(--red)':'var(--green)'}"></div></div>
       <div class="stat-foot">Fecha dia ${c.closingDay} · vence dia ${c.dueDay}</div>
@@ -2256,7 +2307,7 @@ function invoiceCardHtml(card, inv){
     <div class="stat-value ${inv.paid? 'pos' : 'neg'} num">${fmtCurrency(inv.total)}</div>
     <div class="stat-foot">${inv.paid? 'Paga' : 'A pagar'} · vence ${fmtDate(inv.dueDate)}${inv.closingDate? ' · fecha '+fmtDate(inv.closingDate) : ''} · ${inv.count} lançamento(s)</div>
     ${actions? `<div class="inv-actions">${actions}</div>` : ''}
-    ${inv.count? `<details class="invoice-items"><summary>Ver lançamentos</summary><table><tbody>${rows.map(t=>`<tr><td>${fmtDate(t.purchaseDate||t.date)}</td><td>${escapeHtml(t.description)}</td><td class="right num">${fmtCurrency(t.value)}</td><td>${t.status==='pago'? '<span class="badge green">Pago</span>' : '<span class="badge gold">Pendente</span>'}</td></tr>`).join('')}</tbody></table></details>` : ''}
+    ${inv.count? `<details class="invoice-items"><summary>Ver lançamentos</summary><table><tbody>${rows.map(t=>`<tr><td>${fmtDate(t.purchaseDate||t.date)}</td><td>${escapeHtml(t.description)}</td><td class="right num neg">${fmtCurrency(t.value)}</td><td>${t.status==='pago'? '<span class="badge green">Pago</span>' : '<span class="badge gold">Pendente</span>'}</td></tr>`).join('')}</tbody></table></details>` : ''}
   </div>`;
 }
 function cardInvoicesHtml(){
@@ -2313,7 +2364,7 @@ RENDERERS.parcelamentos = function(){
     const done = paid>=inst.count;
     return `<div class="card">
       <div class="stat-label">${escapeHtml(inst.name)} ${done?'<span class="badge green">Concluído</span>':''}</div>
-      <div class="stat-value num">${fmtCurrency(inst.installmentValue)}<span style="font-size:14px;color:var(--ink-soft)"> /mês</span></div>
+      <div class="stat-value neg num">${fmtCurrency(inst.installmentValue)}<span style="font-size:14px;color:var(--ink-soft)"> /mês</span></div>
       <div class="stat-foot">${paid}/${inst.count} parcelas pagas · total ${fmtCurrency(inst.totalValue)}</div>
       <div class="progress" style="margin-top:8px"><div style="width:${pct}%"></div></div>
       <div class="stat-foot">Início: ${monthLabel(inst.startMonth)} · Fim: ${monthLabel(addMonthsToKey(inst.startMonth,inst.count-1))}</div>
@@ -2339,7 +2390,7 @@ RENDERERS.parcelamentos = function(){
     renderChart('chart-invoice-compare',{
       type:'bar',
       data:{ labels: data.map(d=>monthLabelShort(d.month)), datasets:[
-        { label:'Total da fatura', data: data.map(d=>Math.round(d.total*100)/100), backgroundColor:'rgba(162,75,255,.75)', borderRadius:5, maxBarThickness:40 }
+        { label:'Total da fatura', data: data.map(d=>Math.round(d.total*100)/100), backgroundColor:CHART_COLORS.accentFill, borderRadius:5, maxBarThickness:40 }
       ]},
       options:{
         responsive:true, maintainAspectRatio:false,
@@ -2416,7 +2467,7 @@ RENDERERS.dividas = function(){
     <div class="view-head"><div><h1>Dívidas e empréstimos</h1><div class="view-sub">Acompanhe saldo devedor e previsão de término</div></div>
       <button class="btn primary" id="btn-new-debt">${icon('plus',15)} Nova dívida</button></div>
     <div class="grid grid-3">
-      <div class="card"><div class="stat-label">Total original</div><div class="stat-value num">${fmtCurrency(totalOriginal)}</div></div>
+      <div class="card"><div class="stat-label">Total original</div><div class="stat-value neg num">${fmtCurrency(totalOriginal)}</div></div>
       <div class="card"><div class="stat-label">Total pago</div><div class="stat-value pos num">${fmtCurrency(totalPago)}</div></div>
       <div class="card"><div class="stat-label">Total restante</div><div class="stat-value neg num">${fmtCurrency(totalOriginal-totalPago)}</div></div>
     </div>
@@ -2547,18 +2598,18 @@ RENDERERS.recorrentes = function(){
 };
 function renderRecDespesas(subsAtivas,subsTotal){
   function rowRec(r){
-    return `<tr><td>${escapeHtml(r.name)}${r.cardId?`<span class="badge grey" style="margin-left:6px">${escapeHtml((state.cards.find(c=>c.id===r.cardId)||{}).name||'Cartão')}</span>`:''}</td><td>${escapeHtml(r.category||'—')}</td><td class="right num">${fmtCurrency(r.value)}</td><td>${r.day||'—'}</td>
+    return `<tr><td>${escapeHtml(r.name)}${r.cardId?`<span class="badge grey" style="margin-left:6px">${escapeHtml((state.cards.find(c=>c.id===r.cardId)||{}).name||'Cartão')}</span>`:''}</td><td>${escapeHtml(r.category||'—')}</td><td class="right num neg">${fmtCurrency(r.value)}</td><td>${r.day||'—'}</td>
       <td>${r.isSubscription?'<span class="badge gold">Sim</span>':'—'}</td>
       <td>${r.status==='ativa'?'<span class="badge green">Ativa</span>':'<span class="badge grey">Inativa</span>'}</td>
       <td><button class="icon-btn" data-edit-rec="${r.id}">${icon('edit',15)}</button><button class="icon-btn" data-del-rec="${r.id}">${icon('trash',15)}</button></td></tr>`;
   }
-  return `${subsAtivas.length?`<div class="card" style="margin-bottom:18px"><div class="stat-label">Assinaturas ativas</div><div class="stat-value num">${fmtCurrency(subsTotal)}/mês</div><div class="stat-foot">${fmtCurrency(subsTotal*12)}/ano em ${subsAtivas.length} assinatura(s)</div></div>`:''}
+  return `${subsAtivas.length?`<div class="card" style="margin-bottom:18px"><div class="stat-label">Assinaturas ativas</div><div class="stat-value neg num">${fmtCurrency(subsTotal)}/mês</div><div class="stat-foot">${fmtCurrency(subsTotal*12)}/ano em ${subsAtivas.length} assinatura(s)</div></div>`:''}
     <div class="table-wrap"><table><thead><tr><th>Nome</th><th>Categoria</th><th class="right">Valor</th><th>Dia</th><th>Assinatura</th><th>Status</th><th></th></tr></thead>
     <tbody>${state.recurring.length? state.recurring.map(rowRec).join(''):emptyRow(7,'repeat','Nenhuma despesa recorrente','Cadastre gasolina, assinaturas e outras despesas fixas.')}</tbody></table></div>`;
 }
 function renderRecReceitas(){
   function rowIncome(inc){
-    return `<tr><td>${escapeHtml(inc.name)}</td><td>${escapeHtml(inc.type)}</td><td class="right num">${fmtCurrency(inc.value)}</td>
+    return `<tr><td>${escapeHtml(inc.name)}</td><td>${escapeHtml(inc.type)}</td><td class="right num pos">${fmtCurrency(inc.value)}</td>
       <td>${inc.frequency==='mensal'?'Mensal, dia '+inc.day:'Única em '+fmtDate(inc.startDate)}</td>
       <td>${inc.status==='ativa'?'<span class="badge green">Ativa</span>':'<span class="badge grey">Inativa</span>'}</td>
       <td><button class="icon-btn" data-edit-inc="${inc.id}">${icon('edit',15)}</button><button class="icon-btn" data-del-inc="${inc.id}">${icon('trash',15)}</button></td></tr>`;
@@ -2605,7 +2656,7 @@ RENDERERS.metas = function(){
     const pct = g.targetValue>0? Math.min(Number(g.currentValue)/Number(g.targetValue)*100,100):0;
     return `<div class="card">
       <div class="stat-label">${escapeHtml(g.name)} ${goalDone(g)?'<span class="badge green">Concluída</span>':''}</div>
-      <div class="stat-value num">${fmtCurrency(g.currentValue)} <span style="font-size:14px;color:var(--ink-soft)">/ ${fmtCurrency(g.targetValue)}</span></div>
+      <div class="stat-value ${signClass(g.currentValue)} num">${fmtCurrency(g.currentValue)} <span style="font-size:14px;color:var(--ink-soft)">/ ${fmtCurrency(g.targetValue)}</span></div>
       <div class="progress" style="margin-top:8px"><div style="width:${pct}%"></div></div>
       <div class="stat-foot">${g.deadline? 'Prazo: '+monthLabel(monthKeyOf(g.deadline)) : 'Sem prazo definido'} · aporte planejado ${fmtCurrency(g.monthlyPlanned||0)}/mês</div>
       <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">
@@ -2802,8 +2853,8 @@ function renderComparativo(){
       <thead><tr><th>Categoria</th><th class="right">${monthLabelShort(compMonthA)}</th><th class="right">${monthLabelShort(compMonthB)}</th><th class="right">Diferença</th><th class="right">Variação</th></tr></thead>
       <tbody>${catRows.length? catRows.map(r=>`<tr>
         <td>${escapeHtml(r.cat)}</td>
-        <td class="right num">${fmtCurrency(r.c)}</td>
-        <td class="right num">${fmtCurrency(r.p)}</td>
+        <td class="right num neg">${fmtCurrency(r.c)}</td>
+        <td class="right num neg">${fmtCurrency(r.p)}</td>
         <td class="right num" style="color:${r.diff>0?'var(--red)':r.diff<0?'var(--green)':'var(--ink-soft)'}">${r.diff>=0?'+':''}${fmtCurrency(r.diff)}</td>
         <td class="right">${changeBadge(r.pct,'down')}</td>
       </tr>`).join('') : emptyRow(5,'barchart','Sem dados para comparar','Cadastre despesas em pelo menos um dos dois meses.')}</tbody>
@@ -2822,7 +2873,7 @@ function wireComparativo(){
     type:'bar',
     data:{ labels:['Receitas','Despesas','Saldo'], datasets:[
       { label:labelA, data:[curS.plannedReceitas,curS.plannedDespesas,saldoA], backgroundColor:CHART_COLORS.green, borderRadius:5, maxBarThickness:46 },
-      { label:labelB, data:[prevS.plannedReceitas,prevS.plannedDespesas,saldoB], backgroundColor:'rgba(162,75,255,.75)', borderRadius:5, maxBarThickness:46 }
+      { label:labelB, data:[prevS.plannedReceitas,prevS.plannedDespesas,saldoB], backgroundColor:CHART_COLORS.accentFill, borderRadius:5, maxBarThickness:46 }
     ]},
     options:{
       responsive:true, maintainAspectRatio:false,
@@ -2839,7 +2890,7 @@ function wireComparativo(){
     type:'bar',
     data:{ labels: catRows.map(r=>r.cat), datasets:[
       { label:labelA, data:catRows.map(r=>Math.round(r.c*100)/100), backgroundColor:CHART_COLORS.green, borderRadius:4, maxBarThickness:18 },
-      { label:labelB, data:catRows.map(r=>Math.round(r.p*100)/100), backgroundColor:'rgba(162,75,255,.75)', borderRadius:4, maxBarThickness:18 }
+      { label:labelB, data:catRows.map(r=>Math.round(r.p*100)/100), backgroundColor:CHART_COLORS.accentFill, borderRadius:4, maxBarThickness:18 }
     ]},
     options:{
       responsive:true, maintainAspectRatio:false, indexAxis:'y',
@@ -2882,10 +2933,10 @@ function renderPareto(){
     ${rows.map(r=>`<div class="pareto-bar-row">
       <div>${escapeHtml(r.cat)}${r.essential?'<span class="tag-essential">essencial</span>':''}</div>
       <div class="pareto-track"><div class="pareto-fill ${r.cumPct<=80?'over':''}" style="width:${r.pct}%"></div></div>
-      <div class="right num">${fmtCurrency(r.val)}</div>
+      <div class="right num neg">${fmtCurrency(r.val)}</div>
       <div class="right num">${r.pct.toFixed(1)}%</div>
     </div>`).join('')}
-    <div class="stat-foot" style="margin-top:10px">Total de despesas: <span class="num">${fmtCurrency(total)}</span></div>
+    <div class="stat-foot" style="margin-top:10px">Total de despesas: <span class="num neg">${fmtCurrency(total)}</span></div>
   </div>`;
 }
 function renderEquilibrio(){
@@ -2902,7 +2953,7 @@ function renderProjecao(){
   const proj = projection(todayMonthKey(),12);
   const notes = endingCommitmentsInRange(todayMonthKey(),12);
   return `<div class="table-wrap"><table><thead><tr><th>Mês</th><th class="right">Receitas</th><th class="right">Despesas</th><th class="right">Saldo</th><th class="right">Acumulado</th></tr></thead>
-    <tbody>${proj.map(p=>`<tr><td>${p.label}</td><td class="right num">${fmtCurrency(p.receitas)}</td><td class="right num">${fmtCurrency(p.despesas)}</td><td class="right num">${fmtCurrency(p.saldo)}</td><td class="right num">${fmtCurrency(p.saldoAcumulado)}</td></tr>`).join('')}</tbody></table></div>
+    <tbody>${proj.map(p=>`<tr><td>${p.label}</td><td class="right num pos">${fmtCurrency(p.receitas)}</td><td class="right num neg">${fmtCurrency(p.despesas)}</td><td class="right num ${signClass(p.saldo)}">${fmtCurrency(p.saldo)}</td><td class="right num ${signClass(p.saldoAcumulado)}">${fmtCurrency(p.saldoAcumulado)}</td></tr>`).join('')}</tbody></table></div>
     ${notes.length? `<div class="section-title"><h2>Mudanças previstas</h2></div>${notes.map(n=>`<div class="alert-item" style="background:var(--green-bg);color:var(--green)">${icon('checkCircle',16)}<span>${escapeHtml(n)}</span></div>`).join('')}` : ''}`;
 }
 function renderSimulador(){
@@ -3061,6 +3112,7 @@ async function init(){
   });
 }
 async function bootApp(){
+  initTheme();
   try{ await loadState(); }
   catch(e){ console.error('Erro ao carregar dados:', e); showLoadError(); return; }
   initHistory();
