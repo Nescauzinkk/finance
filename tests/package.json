@@ -1,0 +1,11 @@
+{
+  "name": "kivo-tests",
+  "private": true,
+  "description": "Testes do Kivo: simulação do app inteiro (todas as telas, dois temas) e checagens do CSS/tema.",
+  "scripts": {
+    "test": "node smoke.test.js && node css-theme.test.js",
+    "smoke": "node smoke.test.js",
+    "css": "node css-theme.test.js"
+  },
+  "devDependencies": { "esbuild": "^0.28.2", "jsdom": "^31.0.1" }
+}

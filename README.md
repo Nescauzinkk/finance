@@ -139,3 +139,8 @@ O Kivo guarda cópias automáticas dos seus dados (no máximo uma por hora, as �
 Para ativar, rode **uma única vez** o SQL do final de `supabase/schema.sql` no SQL Editor do Supabase (ele só cria uma tabela nova, sem mexer nos dados existentes). Se a tabela não existir, o resto do app funciona normalmente e a própria tela de Configurações mostra como ativar.
 
 O salvamento também avisa na tela quando falha (e tenta de novo sozinho) e detecta quando outro aparelho salvou alterações, pedindo sua escolha em vez de sobrescrever.
+
+## Testes
+
+Na pasta `tests/` há uma simulação do app inteiro (todas as telas, clicando em tudo, nos dois temas) e
+checagens do CSS/tema. Para rodar: `cd tests && npm install && npm test`. Detalhes em `tests/README.md`.

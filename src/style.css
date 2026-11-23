@@ -730,3 +730,6 @@ b.pos,b.neg,td.pos,td.neg{font-weight:700;}
 .dc-tip-list li{display:flex;justify-content:space-between;gap:12px;padding:2px 0;}
 .dc-tip-list em{color:var(--ink-dim);font-style:normal;}
 .dc-more{color:var(--ink-dim);}
+
+/* ---------- Foco visível (teclado) ---------- */
+.btn:focus-visible,.nav-item:focus-visible,.icon-btn:focus-visible,.lp-btn:focus-visible,.dash-chip:focus-visible,.period-btn:focus-visible,.subtab:focus-visible,.toast-action:focus-visible,.step-btn:focus-visible,a:focus-visible,summary:focus-visible,.card.clickable:focus-visible,.cat-row:focus-visible{outline:2px solid var(--accent-hi);outline-offset:2px;}

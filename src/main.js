@@ -61,8 +61,8 @@ function firstInvoiceMonth(card, purchaseDateISO){
   return day > closing ? addMonthsToKey(purchaseMonth,1) : purchaseMonth;
 }
 const MONTH_NAMES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
-function monthLabel(key){const [y,m]=key.split('-').map(Number);return `${MONTH_NAMES[m-1]} ${y}`;}
-function monthLabelShort(key){const [y,m]=key.split('-').map(Number);return `${MONTH_NAMES[m-1].slice(0,3)}/${String(y).slice(2)}`;}
+function monthLabel(key){ if(!key) return '—'; const [y,m]=key.split('-').map(Number);return `${MONTH_NAMES[m-1]} ${y}`;}
+function monthLabelShort(key){ if(!key) return '—'; const [y,m]=key.split('-').map(Number);return `${MONTH_NAMES[m-1].slice(0,3)}/${String(y).slice(2)}`;}
 function escapeHtml(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 
 /* ===================== ICONS ===================== */
@@ -131,6 +131,8 @@ function applyTheme(t, opts){
   document.documentElement.setAttribute('data-theme', t);
   const meta = document.querySelector('meta[name="theme-color"]');
   if(meta) meta.setAttribute('content', t==='light'? '#F5F5F8' : '#0C0C10');
+  const ios = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
+  if(ios) ios.setAttribute('content', t==='light'? 'default' : 'black-translucent');   // no iPhone, texto branco sumiria no fundo claro
   const b = document.getElementById('btn-theme');
   if(b){
     const next = t==='light'? 'Mudar para o tema escuro' : 'Mudar para o tema claro';
@@ -141,9 +143,12 @@ function applyTheme(t, opts){
   if(opts && opts.rerender && typeof renderAll==='function') renderAll();
 }
 function toggleTheme(){ applyTheme(currentTheme()==='light'? 'dark' : 'light', {save:true, rerender:true}); }
+let themeMqBound = false;
 function initTheme(){
   applyTheme(currentTheme());
   const b = document.getElementById('btn-theme'); if(b) b.onclick = toggleTheme;
+  if(themeMqBound) return;
+  themeMqBound = true;
   try{
     const mq = window.matchMedia('(prefers-color-scheme: light)');
     const follow = e=>{ let saved = null; try{ saved = localStorage.getItem(THEME_KEY); }catch(x){} if(!saved) applyTheme(e.matches? 'light' : 'dark', {rerender:true}); };
@@ -881,7 +886,8 @@ function summarize(txns){
     const v = Number(t.value)||0;
     if(t.type==='receita'){ plannedReceitas+=v; if(t.status==='pago') realizedReceitas+=v; }
     else { plannedDespesas+=v; if(t.status==='pago') realizedDespesas+=v;
-      byCategory[t.category]=(byCategory[t.category]||0)+v;
+      const catName = t.category || 'Sem categoria';
+      byCategory[catName]=(byCategory[catName]||0)+v;
     }
   });
   return { txns, plannedReceitas, realizedReceitas, plannedDespesas, realizedDespesas,
@@ -1021,7 +1027,7 @@ function upcomingItems(daysAhead){
   const overdueIso = `${overdueLimit.getFullYear()}-${pad(overdueLimit.getMonth()+1)}-${pad(overdueLimit.getDate())}`;
   return state.transactions
     .filter(t=>t.status==='pendente' && t.date && t.date>=overdueIso && t.date<=limitIso)
-    .sort((a,b)=> a.date.localeCompare(b.date))
+    .sort((a,b)=> (a.date||'').localeCompare(b.date||''))
     .map(t=>({...t, daysUntil: daysBetween(today, t.date)}));
 }
 
@@ -1197,7 +1203,7 @@ function dashboardMessage(){
       ? 'Há 1 conta com vencimento já passado esperando para ser marcada como paga.'
       : `Há ${late.length} contas com vencimento já passado esperando para serem marcadas como pagas.`};
   }
-  const soon = pend.filter(t=>t.date>=today && t.date<=addDaysToISO(today,7)).sort((a,b)=>a.date.localeCompare(b.date));
+  const soon = pend.filter(t=>t.date>=today && t.date<=addDaysToISO(today,7)).sort((a,b)=>(a.date||'').localeCompare(b.date||''));
   if(soon.length){
     const n = daysBetween(today, soon[0].date);
     const when = n===0? 'hoje' : n===1? 'amanhã' : `em ${n} dias`;
@@ -1262,7 +1268,7 @@ function wireDashboardHeader(){
 /* ===================== DASHBOARD (visão do ciclo) ===================== */
 let dashMode = null;   // null = automático: ciclo, se o seu mês não começa no dia 1
 function rnd2(n){ return Math.round(n*100)/100; }
-function fmtDM(iso){ return iso.slice(8,10)+'/'+iso.slice(5,7); }
+function fmtDM(iso){ return iso? iso.slice(8,10)+'/'+iso.slice(5,7) : '—'; }
 function dashPeriod(){
   const today = todayISO();
   const sd = parseInt(state.settings.primeiroDiaMes,10)||1;
@@ -1421,8 +1427,8 @@ function dashCategoriesHtml(byCategory){
 function dashVencimentosHtml(){
   const today = todayISO();
   const pend = state.transactions.filter(t=>t.status==='pendente' && t.type==='despesa' && t.date);
-  const late = pend.filter(t=>t.date<today).sort((a,b)=>a.date.localeCompare(b.date));
-  const next = pend.filter(t=>t.date>=today).sort((a,b)=>a.date.localeCompare(b.date));
+  const late = pend.filter(t=>t.date<today).sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+  const next = pend.filter(t=>t.date>=today).sort((a,b)=>(a.date||'').localeCompare(b.date||''));
   const all = late.concat(next);
   if(!all.length) return '<div class="dash-note">Nenhuma conta pendente. Tudo em dia.</div>';
   const rows = all.slice(0,5).map(t=>{
@@ -1569,7 +1575,7 @@ function renderUpcomingList(items, startingBalance){
 
 /* ===================== LANÇAMENTOS ===================== */
 let lancFilter = {tipo:'todos',categoria:'todos',status:'todos',busca:''};
-let lancPeriod = {mode:'mes', month:todayMonthKey(), custom:{from:'',to:''}, cycleRef:null};
+let lancPeriod = {mode:null, month:null, custom:{from:'',to:''}, cycleRef:null};   // null = automático (ciclo se o seu mês não começa no dia 1)
 function filterLancamentos(list, per, f){
   let out = list;
   if(!per.all) out = out.filter(t=>{ const d = cashDate(t); return d && d>=per.from && d<=per.to; });   // vale o dia em que o dinheiro mexeu
@@ -1633,7 +1639,7 @@ function lancSummaryHtml(rows, per, anyFilter){
 }
 function lancPeriodBarHtml(p){
   const sd = parseInt(state.settings.primeiroDiaMes,10)||1;
-  const modes = [['tudo','Tudo'],['mes','Mês'],['ciclo',`Ciclo (dia ${sd})`],['30d','Últimos 30 dias'],['ano','Este ano'],['custom','Personalizado']];
+  const modes = [['tudo','Tudo'],['mes','Mês'],...(sd>1? [['ciclo',`Ciclo (dia ${sd})`]] : []),['30d','Últimos 30 dias'],['ano','Este ano'],['custom','Personalizado']];
   const per = resolvePeriod(p);
   const nav = p.mode==='mes' || p.mode==='ciclo';
   return `<div class="period-bar">
@@ -1659,8 +1665,10 @@ function downloadText(text, filename){
   a.href = URL.createObjectURL(blob); a.download = filename; a.click();
 }
 RENDERERS.lancamentos = function(){
+  if(!lancPeriod.mode) lancPeriod.mode = defaultPeriodMode();
+  if(!lancPeriod.month) lancPeriod.month = todayMonthKey();
   const per = resolvePeriod(lancPeriod);
-  const everything = state.transactions.slice().sort((a,b)=> b.date.localeCompare(a.date));
+  const everything = state.transactions.slice().sort((a,b)=> (b.date||'').localeCompare(a.date||''));
   const list = filterLancamentos(everything, per, lancFilter);
   const anyFilter = lancFilter.tipo!=='todos' || lancFilter.categoria!=='todos' || lancFilter.status!=='todos' || !!lancFilter.busca.trim();
   const definedCats = state.categories.map(c=>c.name);
@@ -2190,7 +2198,7 @@ RENDERERS.cartao = function(){
       <div class="stat-value ${signClass(c.limit-used)} num">${fmtCurrency(c.limit-used)}</div>
       <div class="stat-foot">disponível de ${fmtCurrency(c.limit)}</div>
       <div class="progress" style="margin-top:10px"><div style="width:${pct}%;background:${pct>85?'var(--red)':'var(--green)'}"></div></div>
-      <div class="stat-foot">Fecha dia ${c.closingDay} · vence dia ${c.dueDay}</div>
+      <div class="stat-foot">Fecha dia ${c.closingDay||'—'} · vence dia ${c.dueDay||'—'}</div>
       <div style="margin-top:10px"><button class="icon-btn" data-edit-card="${c.id}">${icon('edit',14)} Editar</button> <button class="icon-btn" data-del-card="${c.id}">${icon('trash',14)} Excluir</button></div>
     </div>`;
   }
@@ -2766,6 +2774,7 @@ function openGoalModal(g){
 let reportSubtab = 'resumo';
 let compMonthA = todayMonthKey();
 let compMonthB = addMonthsToKey(todayMonthKey(),-1);
+let reportModeInit = false;
 let reportMode = 'mes';          // 'mes' | 'ciclo' | '30d' | 'ano' | 'custom'
 let reportCustom = {from:'', to:''};
 let reportCycleRef = null;
@@ -2781,6 +2790,7 @@ function cycleFor(refISO, startDay){
   const to = sd===1? fromMonth+'-'+pad(daysInMonth(fromMonth)) : addMonthsToKey(fromMonth,1)+'-'+pad(sd-1);
   return {from,to};
 }
+function defaultPeriodMode(){ return (parseInt(state.settings.primeiroDiaMes,10)||1)>1? 'ciclo' : 'mes'; }   // o mesmo padrão em Dashboard, Lançamentos e Relatórios
 function resolvePeriod(p){
   const today = todayISO();
   if(p.mode==='tudo') return {from:'0000-01-01', to:'9999-12-31', label:'Todos os lançamentos', all:true};
@@ -2832,6 +2842,7 @@ function periodBarHtml(){
   ${reportMode==='ciclo' && sd===1? `<div class="help-text" style="margin:-6px 0 14px">Seu ciclo começa no dia 1. Para usar o dia em que o seu mês realmente começa, ajuste "Primeiro dia do seu mês" em Configurações.</div>` : ''}`;
 }
 RENDERERS.relatorios = function(){
+  if(!reportModeInit){ reportModeInit = true; reportMode = defaultPeriodMode(); }
   const usesPeriod = PERIOD_SUBTABS.includes(reportSubtab);
   const per = reportPeriod();
   $('#view-relatorios').innerHTML = `
