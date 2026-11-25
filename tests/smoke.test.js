@@ -145,6 +145,25 @@ async function runVariant(variant,bundleText){
       fat.menor=/menor que o do Kivo/.test(flat(doc.getElementById('toasts'))); fat.ajusteSumiu=!invCards().some(el=>/Ajuste da fatura/.test(flat(el))); }
   }
   info.fat=fat;
+  // ---- Simulador "e se eu comprar isso?" ----
+  const simi={}; visit('dashboard'); await wait(15);
+  const svgSim=()=>doc.querySelector('#view-dashboard svg.dc-svg');
+  const fillSim=async(vals)=>{ doc.getElementById('btn-sim').click(); await wait(10); const f=doc.getElementById('modal-form'); Object.entries(vals).forEach(([k,val])=>{ const el=f.querySelector(`[name="${k}"]`); if(el) el.value=val; }); f.dispatchEvent(new w.Event('submit',{cancelable:true,bubbles:true})); await wait(20); };
+  simi.botao=!!doc.getElementById('btn-sim');
+  if(variant!=='vazio'){
+    await fillSim({value:'999999,00', mode:'avista', description:'Carro'});
+    simi.painel=flat(doc.querySelector('#view-dashboard .dash-sim')); simi.linha=!!(svgSim()&&svgSim().querySelector('.dc-sim')); simi.negativo=/negativo a partir de/.test(simi.painel); simi.nome=/Carro/.test(simi.painel);
+    svgSim().getBoundingClientRect=()=>({left:0,top:0,width:640,height:214}); svgSim().dispatchEvent(new w.MouseEvent('pointermove',{clientX:635,bubbles:true}));
+    simi.tooltip=/Com a compra/.test(flat(doc.querySelector('#view-dashboard .dc-tip')));
+    doc.getElementById('sim-clear').click(); await wait(15);
+    simi.limpou=!doc.querySelector('#view-dashboard .dash-sim') && !svgSim().querySelector('.dc-sim') && /Simular uma compra/.test(doc.getElementById('btn-sim').textContent);
+    doc.getElementById('btn-sim').click(); await wait(10); const cid=doc.querySelector('#modal-form [name="cardId"]').options[0].value; doc.getElementById('m-cancel').click();
+    await fillSim({value:'3000,00', mode:'parcelado', count:'10', cardId:cid}); simi.parcelado=/em 10x de R\$ 300,00/.test(simi.painel=flat(doc.querySelector('#view-dashboard .dash-sim')));
+    simi.editar=/Editar simulação/.test(doc.getElementById('btn-sim').textContent); doc.getElementById('sim-clear').click(); await wait(15);
+  } else {
+    await fillSim({value:'500,00', mode:'parcelado'}); simi.erroSemCartao=/Cadastre um cartão/.test(flat(doc.getElementById('toasts'))) && !doc.querySelector('#view-dashboard .dash-sim');
+  }
+  info.sim=simi;
   await pass('escuro');
   doc.getElementById('btn-theme').click(); info.tema=doc.documentElement.getAttribute('data-theme'); await pass('claro');
   doc.getElementById('btn-theme').click();
@@ -170,7 +189,10 @@ async function runVariant(variant,bundleText){
     const f=r.info.fat;
     const fatOk = v==='normal'? (f.campo && f.botao && f.total && f.ajuste && /Criei um lançamento/.test(f.toast) && f.fechada && f.temBotaoBanco && f.menor && f.ajusteSumiu) : true;
     if(!fatOk) console.log('    Total do banco inesperado:', JSON.stringify(f));
-    const ok=r.errors.length===0 && r.problems.length===0 && r.temaTrocou && coerente && relOk && orcOk && fatOk;
+    const sm=r.info.sim;
+    const simOk = sm.botao && (v==='vazio'? sm.erroSemCartao===true : (sm.linha && (v==='normal'? sm.negativo : true) && sm.nome && sm.tooltip && sm.limpou && sm.parcelado && sm.editar));
+    if(!simOk) console.log('    Simulador inesperado:', JSON.stringify(sm));
+    const ok=r.errors.length===0 && r.problems.length===0 && r.temaTrocou && coerente && relOk && orcOk && fatOk && simOk;
     console.log(`${ok?'PASSOU ':'FALHOU '} cenário "${v}": ${r.clicks} cliques nos 2 temas · abre em: Lançamentos=${r.info.lanc}, Relatórios=${r.info.rel}, Dashboard=${r.info.dash}`);
     r.errors.slice(0,10).forEach(e=>console.log('    erro:',e)); r.problems.slice(0,10).forEach(e=>console.log('    problema:',e));
     if(!coerente) console.log(`    período padrão inconsistente (esperado "${modo}" em todas as telas)`);

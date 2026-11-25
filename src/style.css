@@ -756,3 +756,16 @@ b.pos,b.neg,td.pos,td.neg{font-weight:700;}
 
 .modal-note{font-size:13px;color:var(--ink-soft);line-height:1.5;margin-bottom:14px;}
 .modal-note b{color:var(--ink);}
+
+/* ---------- Simulador: "e se eu comprar isso?" ---------- */
+.dc-sim{fill:none;stroke:var(--warn);stroke-width:2.5;stroke-dasharray:2 5;stroke-linecap:round;}
+.dc-simdot{fill:var(--surface);stroke:var(--warn);stroke-width:3;}
+.dc-sim-t{fill:var(--warn);}
+.dc-tip-sim{margin-top:6px;padding-top:6px;border-top:1px dashed var(--line);color:var(--warn);font-size:12px;}
+.dc-tip-sim b{font-weight:700;} .dc-tip-sim b.pos{color:var(--pos);} .dc-tip-sim b.neg{color:var(--neg);} .dc-tip-sim span{color:var(--ink-soft);}
+.dash-sim{margin-top:14px;padding:14px;border:1px solid var(--warn);background:rgb(var(--warn-rgb) / .06);}
+.dash-sim-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;font-size:14px;}
+.dash-sim-actions{display:flex;gap:8px;}
+.dash-sim-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:12px;}
+.dash-sim-v{font-size:15px;margin-top:4px;} .dash-sim-v b{font-weight:700;} .dash-sim-d{color:var(--ink-soft);font-size:12px;}
+@media(max-width:860px){ .dash-sim-grid{grid-template-columns:1fr;} }

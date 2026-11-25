@@ -1475,7 +1475,8 @@ function dashDayInfo(pts, i){
     if(d===addDaysToISO(today,1)) items = dashDueToday().map(t=>({...mk(t), note:'vence hoje'})).concat(items);
   }
   items.sort((a,b)=>b.value-a.value);
-  return {date:d, label:fmtDayShort(d), value:p.value, delta: i>0? rnd2(p.value-pts[i-1].value) : null, proj:p.proj, isToday:d===today, items};
+  const hasSim = typeof p.sim==='number' && p.sim!==p.value;
+  return {date:d, label:fmtDayShort(d), value:p.value, sim: hasSim? p.sim : null, simDelta: hasSim? rnd2(p.sim-p.value) : null, delta: i>0? rnd2(p.value-pts[i-1].value) : null, proj:p.proj, isToday:d===today, items};
 }
 function dashTipHtml(info){
   const tag = info.isToday? 'Hoje' : info.proj? 'Previsto' : 'Já aconteceu';
@@ -1485,6 +1486,7 @@ function dashTipHtml(info){
   const more = info.items.length>4? `<li class="dc-more">+ ${info.items.length-4} a mais</li>` : '';
   return `<div class="dc-tip-head"><b>${escapeHtml(info.label)}</b><span class="badge grey">${tag}</span></div>`
     + `<div class="dc-tip-val num ${signClass(info.value)}">${fmtCurrency(info.value)}</div>${delta}`
+    + (info.sim!==null && info.sim!==undefined? `<div class="dc-tip-sim">Com a compra: <b class="num ${signClass(info.sim)}">${fmtCurrency(info.sim)}</b> <span>(${signed(info.simDelta)})</span></div>` : '')
     + (list || more? `<ul class="dc-tip-list">${list}${more}</ul>` : '');
 }
 function wireDashChart(wrap, pts){
@@ -1524,13 +1526,16 @@ function dashChartSvg(pts){
   if(pts.length<2) return '<div class="dash-note">Ainda não há dados suficientes para mostrar a evolução do saldo.</div>';
   const W=640, H=214, top=26, bot=26, n=pts.length;
   const vals = pts.map(p=>p.value);
-  const lo = Math.min(0,...vals), hi0 = Math.max(...vals,1), hi = hi0+(hi0-lo)*0.06;
+  const simVals = pts.every(p=>typeof p.sim==='number') && pts.some(p=>p.sim!==p.value)? pts.map(p=>p.sim) : null;
+  const allVals = simVals? vals.concat(simVals) : vals;
+  const lo = Math.min(0,...allVals), hi0 = Math.max(...allVals,1), hi = hi0+(hi0-lo)*0.06;
   const X = i=>(i/(n-1))*W;
   const Y = v=>top+(hi-v)/(hi-lo)*(H-top-bot);
   const f = x=>x.toFixed(1);
   const ti = pts.findIndex(p=>p.date===today);
   const split = ti>=0? ti : (pts[0].date>today? 0 : n-1);
-  const seg = (a,b)=>{ let d = `M${f(X(a))} ${f(Y(vals[a]))}`; for(let i=a+1;i<=b;i++) d += `H${f(X(i))}V${f(Y(vals[i]))}`; return d; };
+  const segOf = (arr,a,b)=>{ let d = `M${f(X(a))} ${f(Y(arr[a]))}`; for(let i=a+1;i<=b;i++) d += `H${f(X(i))}V${f(Y(arr[i]))}`; return d; };
+  const seg = (a,b)=>segOf(vals,a,b);
   const past = split>0? seg(0,split) : '', fut = split<n-1? seg(split,n-1) : '';
   const area = seg(0,n-1)+`V${H-bot}H0Z`;
   const anchor = x=>x>W*0.62? 'end' : 'start', dx = x=>x>W*0.62? -9 : 9;
@@ -1552,17 +1557,96 @@ function dashChartSvg(pts){
   let bi = -1, bv = 0;
   for(let i=split+1;i<n;i++){ const d = vals[i]-vals[i-1]; if(d>bv){ bv = d; bi = i; } }
   if(bi>0) marks += txt(X(bi), Y(vals[bi])-12, `entra ${fmtCurrency(rnd2(bv))} em ${fmtDM(pts[bi].date)}`, 'dc-pos-t');
+  // simulação: segunda linha (pontilhada) e o menor saldo com a compra
+  let simPath = '', simAria = '';
+  if(simVals && split<n-1){
+    simPath = `<path d="${segOf(simVals,split,n-1)}" class="dc-sim"/>`;
+    let si = split; for(let i=split;i<n;i++) if(simVals[i]<simVals[si]) si = i;
+    const near = mi>split && Math.abs(X(si)-X(mi))<120;
+    marks += `<circle cx="${f(X(si))}" cy="${f(Y(simVals[si]))}" r="6" class="dc-simdot"/>` + txt(X(si), Y(simVals[si])+(near? 40 : 22), `com a compra · ${fmtCurrency(simVals[si])} (${fmtDM(pts[si].date)})`, 'dc-sim-t');
+    simAria = `, com a compra o menor saldo seria ${fmtCurrency(simVals[si])} em ${fmtDM(pts[si].date)}`;
+  }
   const zero = lo<0? `<path d="M0 ${f(Y(0))}H${W}" class="dc-zero"/><text x="4" y="${f(Y(0)-5)}" class="dc-neg-t">R$ 0</text>` : '';
   const grid = [0.25,0.5,0.75].map(g=>`<path d="M0 ${f(top+(H-top-bot)*g)}H${W}"/>`).join('');
   const ys = pts.map(p=>Y(p.value).toFixed(1)).join(',');
   const last = pts[n-1];
-  const aria = `Saldo ${pts[split].date===today? 'hoje '+fmtCurrency(vals[split])+', ' : ''}${mi>split? 'menor saldo '+fmtCurrency(vals[mi])+' em '+fmtDM(pts[mi].date)+', ' : ''}termina em ${fmtCurrency(last.value)} em ${fmtDM(last.date)}`;
+  const aria = `Saldo ${pts[split].date===today? 'hoje '+fmtCurrency(vals[split])+', ' : ''}${mi>split? 'menor saldo '+fmtCurrency(vals[mi])+' em '+fmtDM(pts[mi].date)+', ' : ''}termina em ${fmtCurrency(last.value)} em ${fmtDM(last.date)}${simAria}`;
   return `<svg class="dc-svg" viewBox="0 0 ${W} ${H}" width="100%" role="img" tabindex="0" aria-label="${escapeHtml(aria)}" data-w="${W}" data-h="${H}" data-ys="${ys}" style="display:block;font-size:12px">
     <g class="dc-grid">${grid}</g>${zero}
     <path d="${area}" class="dc-area"/>
     ${past? `<path d="${past}" class="dc-past"/>` : ''}
     ${fut? `<path d="${fut}" class="dc-fut"/>` : ''}
+    ${simPath}
     <g class="dc-text">${marks}<text x="2" y="${H-8}">${fmtDM(pts[0].date)}</text><text x="${W-2}" y="${H-8}" text-anchor="end">${fmtDM(last.date)}</text></g><line class="dc-guide" x1="0" x2="0" y1="${top-12}" y2="${H-bot}" visibility="hidden"/><circle class="dc-hover" r="6" cx="0" cy="0" visibility="hidden"/></svg>`;
+}
+let dashSim = null;   // simulação "e se eu comprar isso?": só na tela, nada é lançado
+function simEvents(sim){
+  // as saídas que a compra causaria: à vista = 1 saída na data; parcelado = 1 por fatura, no vencimento (mesmas regras dos lançamentos reais)
+  const today = todayISO(), v = rnd2(Number(sim.value)||0);
+  if(!(v>0)) return [];
+  const date = (sim.date && sim.date>=today)? sim.date : today;
+  if(sim.mode!=='parcelado') return [{date, value:v}];
+  const card = state.cards.find(c=>c.id===sim.cardId);
+  if(!card) return [];
+  const n = Math.max(1, Math.min(60, parseInt(sim.count,10)||1));
+  const first = openInvoiceMonthFrom(card, cardInvoiceFor(card, date).invoiceMonth);
+  const each = Math.floor(v/n*100)/100, out = []; let acc = 0;
+  for(let i=0;i<n;i++){ const val = i===n-1? rnd2(v-acc) : each; acc = rnd2(acc+val); out.push({date:invoiceDueDate(card, addMonthsToKey(first,i)), value:val}); }
+  return out;
+}
+function simSeries(pts, events){
+  // saldo com a compra: o que sai hoje pesa a partir de amanhã (mesma regra das contas que vencem hoje)
+  const today = todayISO();
+  return pts.map(p=> p.date<=today? p.value : rnd2(p.value - events.filter(e=>e.date<=p.date).reduce((a,e)=>a+e.value,0)));
+}
+function simSummary(per, m, pts, events){
+  const today = todayISO();
+  const fut = pts.filter(p=>p.date>=today && typeof p.sim==='number');
+  const minOf = (key)=>fut.reduce((a,p)=> (a===null || p[key]<a.value)? {value:p[key], date:p.date} : a, null);
+  const inPeriod = rnd2(events.filter(e=>e.date<=per.to).reduce((a,e)=>a+e.value,0));
+  const beyond = events.filter(e=>e.date>per.to);
+  const neg = fut.find(p=>p.sim<0 && p.value>=0);
+  return {minBefore:minOf('value'), minAfter:minOf('sim'), endBefore:pts[pts.length-1].value, endAfter:pts[pts.length-1].sim,
+          livreBefore:m.livre, livreAfter:rnd2(m.livre-inPeriod), inPeriod, beyondCount:beyond.length, beyondEach:beyond.length? beyond[0].value : 0,
+          beyondTotal:rnd2(beyond.reduce((a,e)=>a+e.value,0)), total:rnd2(events.reduce((a,e)=>a+e.value,0)), negDate:neg? neg.date : null};
+}
+function dashSimHtml(per, sim, sum, events){
+  const un = hasCycles()? 'ciclo' : 'mês', unPl = hasCycles()? 'ciclos' : 'meses', card = state.cards.find(c=>c.id===sim.cardId);
+  const how = sim.mode==='parcelado' && card? `em ${events.length}x de ${fmtCurrency(events[0].value)} no ${escapeHtml(card.name)}` : `à vista${events[0] && events[0].date>todayISO()? ' em '+fmtDM(events[0].date) : ''}`;
+  const row = (label, before, after, extra)=>`<div><div class="lab">${label}</div><div class="dash-sim-v"><span class="num">${fmtCurrency(before)}</span> → <b class="num ${signClass(after)}">${fmtCurrency(after)}</b>${extra? ` <span class="dash-sim-d">${extra}</span>` : ''}</div></div>`;
+  return `<div class="dash-sim">
+    <div class="dash-sim-head"><div><b>Simulação:</b> ${escapeHtml(sim.description)} · ${fmtCurrency(sum.total)} ${how}</div>
+      <div class="dash-sim-actions"><button class="btn small" id="sim-edit">Editar</button><button class="btn small" id="sim-clear">Limpar</button></div></div>
+    <div class="dash-sim-grid">
+      ${row('Menor saldo do período', sum.minBefore.value, sum.minAfter.value, sum.minAfter? '('+fmtDM(sum.minAfter.date)+')' : '')}
+      ${row('Saldo no fim do período', sum.endBefore, sum.endAfter)}
+      ${row(`Posso gastar até ${fmtDM(per.to)}`, sum.livreBefore, sum.livreAfter)}
+    </div>
+    ${sum.negDate? `<div class="dash-note neg" style="margin-top:12px">Com essa compra o saldo ficaria <b>negativo a partir de ${fmtDM(sum.negDate)}</b>.</div>` : ''}
+    ${sum.beyondCount? `<div class="dash-note">As outras ${sum.beyondCount} parcela${sum.beyondCount===1? '' : 's'} (${fmtCurrency(sum.beyondTotal)}) pesam nos próximos ${unPl}: cerca de ${fmtCurrency(sum.beyondEach)} por ${un}.</div>` : ''}
+    <div class="dash-note">Nada foi lançado: é só uma simulação. Ela some ao recarregar a página.</div>
+  </div>`;
+}
+function openSimModal(){
+  const cur = dashSim || {description:'', value:'', mode:'avista', count:10, cardId:(state.cards[0]||{}).id||'', date:todayISO()};
+  openFormModal({
+    title:'Simular uma compra',
+    initial:{...cur, value:cur.value||''},
+    fields:[
+      {name:'note', type:'note', html:'Veja como uma compra mudaria o seu saldo e o "posso gastar". Nada é lançado.'},
+      {name:'description', label:'O que é (opcional)', type:'text'},
+      {row:[{name:'value', label:'Valor total', type:'currency'}, {name:'date', label:'Data da compra', type:'date'}]},
+      {name:'mode', label:'Como vai pagar', type:'select', options:[{value:'avista',label:'À vista (sai da conta)'},{value:'parcelado',label:'Parcelado no cartão'}]},
+      {row:[{name:'cardId', label:'Cartão (se parcelado)', type:'select', options: state.cards.length? state.cards.map(c=>({value:c.id,label:c.name})) : [{value:'',label:'Nenhum cartão cadastrado'}]}, {name:'count', label:'Parcelas', type:'number'}]}
+    ],
+    submitLabel:'Simular',
+    onSubmit(v){
+      if(!(v.value>0)){ showToast('Informe o valor da compra para simular.','error'); return; }
+      if(v.mode==='parcelado' && !state.cards.some(c=>c.id===v.cardId)){ showToast('Cadastre um cartão para simular uma compra parcelada.','error'); return; }
+      dashSim = {description:(v.description||'').trim() || 'Compra simulada', value:v.value, mode:v.mode, count:Math.max(1,Math.min(60,Math.round(v.count)||1)), cardId:v.cardId, date:v.date||todayISO()};
+      RENDERERS.dashboard();
+    }
+  });
 }
 function dashCategoriesHtml(byCategory){
   const e = Object.entries(byCategory).sort((a,b)=>b[1]-a[1]);
@@ -1621,6 +1705,11 @@ RENDERERS.dashboard = function(){
   const s = periodSummary(per);
   const pat = dashPatrimonio(s.plannedReceitas);
   const pts = dashSeries(per);
+  let simPanel = '';
+  if(dashSim){
+    const ev = simEvents(dashSim);
+    if(ev.length && pts.length>1){ const sv = simSeries(pts, ev); pts.forEach((p,i)=>{ p.sim = sv[i]; }); simPanel = dashSimHtml(per, dashSim, simSummary(per, m, pts, ev), ev); }
+  }
   const alerts = computeAlerts().filter(a=>a.sev!=='green' && a.sev!=='grey');
   const pct = (done,plan)=>plan>0? Math.min(100, done/plan*100).toFixed(0) : 0;
   const accNames = state.accounts.filter(a=>a.status!=='inativa').map(a=>a.name);
@@ -1664,9 +1753,10 @@ RENDERERS.dashboard = function(){
 
     <div class="dash-grid dash-2">
       <div class="card dash-chart">
-        <div class="stat-label">Como o saldo deve andar até ${fmtDM(per.to)}</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div class="stat-label">Como o saldo deve andar até ${fmtDM(per.to)}</div><button class="btn small" id="btn-sim">${dashSim? 'Editar simulação' : 'Simular uma compra'}</button></div>
         <div class="dc-wrap">${dashChartSvg(pts)}<div class="dc-tip" hidden></div></div>
         <div class="dash-note">Passe o mouse (ou toque) no gráfico para ver cada dia. Linha cheia: o que já aconteceu. Tracejada: previsão com as contas e recebimentos já lançados.</div>
+        ${simPanel}
       </div>
       <div class="card">
         <div class="stat-label">Próximos vencimentos</div>
@@ -1704,6 +1794,10 @@ RENDERERS.dashboard = function(){
   $$('#view-dashboard .dash-chip').forEach(b=>b.onclick=()=>{ dashMode = b.dataset.dmode; RENDERERS.dashboard(); });
   wireDashboardHeader();
   const dcw = $('#view-dashboard .dc-wrap'); if(dcw) wireDashChart(dcw, pts);
+  $('#btn-sim').onclick = openSimModal;
+  const se = $('#sim-edit'), sc = $('#sim-clear');
+  if(se) se.onclick = openSimModal;
+  if(sc) sc.onclick = ()=>{ dashSim = null; RENDERERS.dashboard(); };
 };
 function renderUpcomingList(items, startingBalance){
   if(!items.length) return `<div class="empty-state">${icon('calendar',28)}<strong>Nada por vir</strong><span>Nenhum lançamento pendente nesse período.</span></div>`;
