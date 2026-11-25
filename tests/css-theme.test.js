@@ -16,7 +16,7 @@ const last=css.lastIndexOf(':root{\n  color-scheme:dark;'); const darkBlock=css.
 const li=css.indexOf(':root[data-theme="light"]{'); const lightBlock=css.slice(li, css.indexOf('}',li));
 const tok=b=>Object.fromEntries([...b.matchAll(/(--[\w-]+):\s*([^;]+);/g)].map(m=>[m[1],m[2].trim()]));
 const D=tok(darkBlock), L=tok(lightBlock);
-const must=['--bg','--surface','--panel','--panel-2','--panel-3','--input','--scrim','--line','--line-soft','--ink','--ink-soft','--ink-dim','--accent','--accent-hi','--on-accent','--pos','--neg','--warn','--accent-rgb','--pos-rgb','--neg-rgb','--warn-rgb','--ink-rgb','--shadow-rgb'];
+const must=['--line-strong','--bg','--surface','--panel','--panel-2','--panel-3','--input','--scrim','--line','--line-soft','--ink','--ink-soft','--ink-dim','--accent','--accent-hi','--on-accent','--pos','--neg','--warn','--accent-rgb','--pos-rgb','--neg-rgb','--warn-rgb','--ink-rgb','--shadow-rgb'];
 ok('tema claro redefine todas as cores-base do escuro', must.every(k=>k in D && k in L) || (console.log('   faltando:',must.filter(k=>!(k in L))),false));
 ok('os dois temas declaram o esquema de cores (campos de data, rolagem nativos)', /color-scheme:dark/.test(darkBlock) && /color-scheme:light/.test(lightBlock));
 const lum=h=>{ const c=[1,3,5].map(i=>parseInt(h.slice(i,i+2),16)/255).map(v=>v<=.03928? v/12.92 : Math.pow((v+.055)/1.055,2.4)); return .2126*c[0]+.7152*c[1]+.0722*c[2]; };
@@ -42,5 +42,14 @@ ok('tema inicial: salvo "light" vence; salvo "dark" vence; sem escolha segue o s
 ok('foco visível para quem usa teclado (botões, menu, abas, links)', /\.btn:focus-visible[^{]*\{outline:2px solid var\(--accent-hi\)/.test(css));
 ok('regra global verde/vermelho para valores existe e vem depois do .stat-value', css.lastIndexOf('.pos{color:var(--pos);}')>css.lastIndexOf('.stat-value{') && css.lastIndexOf('.neg{color:var(--neg);}')>0);
 ok('barra de status do iPhone acompanha o tema (script inicial)', /apple-mobile-web-app-status-bar-style/.test(early));
+
+// ===== cantos retos e borda dos quadros =====
+const mainJs=fs.readFileSync(require('path').join(__dirname,'..','src','main.js'),'utf8');
+ok('SEM cantos arredondados: nenhum raio no CSS além de 0, círculos (50%) e as variáveis zeradas; gráficos sem raio', !/border-radius:\s*(?!0\b|50%|var\(--r(-lg)?\))/.test(css) && /--r:0;\s*--r-lg:0;/.test(darkBlock.replace(/\s+/g,' ')) && !/borderRadius:\s*[1-9]/.test(mainJs));
+const ratio=(a,b)=>cr(a,b);
+ok('tema escuro: a borda dos quadros é MAIS CLARA que o preenchimento cinza (contraste 1,4 a 2,2 — visível sem berrar)', lum(D['--line-strong'])>lum(D['--surface']) && ratio(D['--line-strong'],D['--surface'])>=1.4 && ratio(D['--line-strong'],D['--surface'])<=2.2 || (console.log('   razão:',ratio(D['--line-strong'],D['--surface'])),false));
+ok('tema claro: a borda se destaca do branco do quadro (contraste ≥ 1,2) e do fundo da página', ratio(L['--line-strong'],L['--surface'])>=1.2 && ratio(L['--line-strong'],L['--bg'])>=1.0);
+ok('a borda forte vale para cartões, tabelas, janelas, avisos e dicas do gráfico; o aviso com faixa lateral colorida fica de fora', /\.card,\.table-wrap,\.net-worth-card,\.status-banner,\.modal,\.auth-card,\.toast,#save-banner,\.dc-tip,\.invoice-card\{border:1px solid var\(--line-strong\);border-radius:0;\}/.test(css) && !/alert-item,[^{]*line-strong|line-strong[^}]*alert-item/.test(css));
+ok('o destaque verde/vermelho do cartão "Posso gastar" vem DEPOIS da regra geral de borda (senão ela o apagava)', css.lastIndexOf('.card.dash-ok{border-color')>css.lastIndexOf('.card,.table-wrap,.net-worth-card') && css.lastIndexOf('.card.dash-bad{border-color')>css.lastIndexOf('.card,.table-wrap,.net-worth-card'));
 let bad=0; for(const [l,v] of R){ console.log((v?'PASSOU  ':'FALHOU  ')+l); if(!v) bad++; }
 console.log('\n'+R.length+' verificações,', bad+' falha(s)'); process.exit(bad?1:0);

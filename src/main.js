@@ -108,7 +108,7 @@ function emptyRow(colspan,iconName,title,subtitle){
 /* ===================== CHARTS ===================== */
 const CHART_COLORS = {
   green:'#3DDC97', red:'#FF6B7A', yellow:'#F5C451', accent:'#7658F4',
-  ink:'#ECECF1', inkSoft:'#A3A3B2', line:'#2A2A34', panel:'#14141A',
+  ink:'#ECECF1', inkSoft:'#A3A3B2', line:'#2A2A34', panel:'#17171E',
   accentFill:'rgba(118,88,244,.75)', greenFill:'rgba(61,220,151,.12)', greenBar:'rgba(61,220,151,.75)', yellowBar:'rgba(245,196,81,.75)'
 };
 function applyChartTheme(){
@@ -208,7 +208,7 @@ function categoryBarChart(canvasId, monthKey){
     data:{ labels: top.map(r=>r.cat), datasets:[{
       label:'Despesas', data: top.map(r=>Math.round(r.val*100)/100),
       backgroundColor: top.map(r=> r.essential? CHART_COLORS.yellowBar : CHART_COLORS.greenBar),
-      borderRadius:5, maxBarThickness:34
+      borderRadius:0, maxBarThickness:34
     }]},
     options:{
       responsive:true, maintainAspectRatio:false, indexAxis:'y',
@@ -949,6 +949,152 @@ function paretoData(monthKey){
   rows.forEach(r=>{ r.pct = total? r.val/total*100:0; cum+=r.pct; r.cumPct=cum; r.essential=categoryEssential(r.cat); });
   return {rows,total};
 }
+/* ===================== RELATÓRIOS POR CICLO ===================== */
+function hasCycles(){ return (parseInt(state.settings.primeiroDiaMes,10)||1)>1; }
+function cycleAt(offset){   // 0 = ciclo de hoje, -1 = anterior, +1 = próximo...
+  const sd = state.settings.primeiroDiaMes;
+  let c = cycleFor(todayISO(), sd);
+  for(let i=0;i<Math.abs(offset);i++) c = offset<0? cycleFor(addDaysToISO(c.from,-1), sd) : cycleFor(addDaysToISO(c.to,1), sd);
+  return c;
+}
+function cycleLabel(c){ return hasCycles()? `${fmtDM(c.from)} a ${fmtDM(c.to)}/${c.to.slice(2,4)}` : monthLabel(c.from.slice(0,7)); }
+function cycleShort(c){ return hasCycles()? `${fmtDM(c.from)}–${fmtDM(c.to)}` : monthLabelShort(c.from.slice(0,7)); }
+function cycleOptions(selected){
+  let h = '';
+  for(let o=6;o>=-24;o--) h += `<option value="${o}" ${o===selected? 'selected' : ''}>${escapeHtml(cycleLabel(cycleAt(o)))}${o===0? ' (atual)' : ''}</option>`;
+  return h;
+}
+function firstDataDate(){ const ds = state.transactions.map(cashDate).filter(Boolean).sort(); return ds.length? ds[0] : todayISO(); }
+function cycleNet(c){
+  // ciclo que já acabou: vale o que realmente aconteceu; ciclo atual e futuros: o planejado (realizado + o que falta)
+  const s = periodSummary(c), past = c.to < todayISO();
+  return {s, past, saldo: past? s.saldoRealizado : s.saldoPlanejado};
+}
+function accumulatedBeforeCycle(c){
+  const sd = state.settings.primeiroDiaMes;
+  let cc = cycleFor(firstDataDate(), sd), acc = 0, guard = 0;
+  while(cc.to < c.from && guard++ < 600){ acc += cycleNet(cc).saldo; cc = cycleFor(addDaysToISO(cc.to,1), sd); }
+  return rnd2(acc);
+}
+function projectionCycles(n){
+  const sd = state.settings.primeiroDiaMes, out = [];
+  let c = cycleAt(0), acc = accumulatedBeforeCycle(c);
+  for(let i=0;i<n;i++){
+    const net = cycleNet(c); acc = rnd2(acc+net.saldo);
+    out.push({from:c.from, to:c.to, label:cycleLabel(c), receitas:net.s.plannedReceitas, despesas:net.s.plannedDespesas, saldo:rnd2(net.saldo), saldoAcumulado:acc});
+    c = cycleFor(addDaysToISO(c.to,1), sd);
+  }
+  return out;
+}
+function endingCommitmentsCycles(n){
+  const notes = [], first = cycleAt(0), last = cycleAt(n-1);
+  const check = (list,label,dateOf)=>list.forEach(item=>{
+    if(!item.count || !item.startMonth) return;
+    const end = dateOf(item, item.count-1);
+    if(end>=first.from && end<=last.to){
+      const c = cycleFor(end, state.settings.primeiroDiaMes);
+      notes.push(`${label} "${item.name}" termina ${hasCycles()? 'no ciclo '+cycleLabel(c) : 'em '+cycleLabel(c)} — a partir do período seguinte, aproximadamente ${fmtCurrency(item.installmentValue)} a menos de despesas fixas.`);
+    }
+  });
+  check(state.installments,'O parcelamento de',instDate);
+  check(state.debts,'A dívida de',debtDate);
+  return notes;
+}
+/* ===================== ORÇAMENTO POR CATEGORIA (limite por ciclo) ===================== */
+let budgetOffset = 0;   // 0 = ciclo atual
+function fmtPlain(n){ return Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function budgetRows(c){
+  // gasto = pago + ainda previsto no ciclo (as despesas que o ciclo vai ter); "pago" mostra só o que já saiu
+  const s = periodSummary(c), spent = {}, paid = {};
+  s.txns.forEach(t=>{
+    if(t.type!=='despesa') return;
+    const n = t.category || 'Sem categoria', v = Number(t.value)||0;
+    spent[n] = (spent[n]||0)+v; if(t.status==='pago') paid[n] = (paid[n]||0)+v;
+  });
+  const cats = state.categories.filter(x=>x.type==='despesa' && x.status!=='inativa');
+  const names = new Set(cats.map(x=>x.name)); Object.keys(spent).forEach(n=>names.add(n));
+  const rows = [...names].map(name=>{
+    const cat = state.categories.find(x=>x.name===name && x.type==='despesa');
+    const limit = Number(cat && cat.limit)||0, used = rnd2(spent[name]||0), pct = limit>0? used/limit*100 : null;
+    return {name, essential:!!(cat && cat.essential), limit, spent:used, paid:rnd2(paid[name]||0), left: limit>0? rnd2(limit-used) : null, pct,
+            status: limit<=0? 'sem' : pct>100? 'estourou' : pct>=80? 'atencao' : 'ok'};
+  });
+  return rows.sort((a,b)=> (b.limit>0)-(a.limit>0) || (b.pct||0)-(a.pct||0) || b.spent-a.spent || a.name.localeCompare(b.name));
+}
+function budgetAlerts(){
+  const un = hasCycles()? 'ciclo' : 'mês';
+  return budgetRows(cycleAt(0)).filter(r=>r.limit>0 && r.pct>=80).map(r=> r.pct>100
+    ? {sev:'rust', msg:`Você passou do limite de "${r.name}" neste ${un}: ${fmtCurrency(r.spent)} de ${fmtCurrency(r.limit)}.`}
+    : {sev:'gold', msg:`"${r.name}" já usou ${Math.round(r.pct)}% do limite do ${un} (${fmtCurrency(r.spent)} de ${fmtCurrency(r.limit)}).`});
+}
+function budgetBadge(st){
+  return st==='estourou'? '<span class="badge rust">Estourou</span>' : st==='atencao'? '<span class="badge gold">Atenção</span>' : st==='ok'? '<span class="badge green">Dentro</span>' : '<span class="badge grey">Sem limite</span>';
+}
+function renderOrcamento(){
+  const c = cycleAt(budgetOffset), rows = budgetRows(c), U = hasCycles();
+  const withLimit = rows.filter(r=>r.limit>0);
+  const totLimit = rnd2(withLimit.reduce((a,r)=>a+r.limit,0)), totSpent = rnd2(withLimit.reduce((a,r)=>a+r.spent,0)), totLeft = rnd2(totLimit-totSpent);
+  return `
+    <div class="field-row" style="max-width:560px;margin-bottom:8px"><div class="field"><label>${U? 'Ciclo' : 'Mês'}</label><select id="bud-cycle">${cycleOptions(budgetOffset)}</select></div></div>
+    <div class="help-text" style="margin-top:0">Digite o limite de cada categoria para o ${U? 'ciclo' : 'mês'}. O gasto soma o que já foi pago e o que ainda está previsto. A partir de 80% o app avisa.</div>
+    <div class="grid grid-3" style="margin-top:12px">
+      <div class="card"><div class="stat-label">Limites definidos</div><div class="stat-value num">${fmtCurrency(totLimit)}</div><div class="stat-foot">${withLimit.length} categoria${withLimit.length===1? '' : 's'}</div></div>
+      <div class="card"><div class="stat-label">Gasto nessas categorias</div><div class="stat-value neg num">${fmtCurrency(totSpent)}</div><div class="stat-foot">${totLimit>0? Math.round(totSpent/totLimit*100)+'% do total dos limites' : 'defina um limite para começar'}</div></div>
+      <div class="card"><div class="stat-label">Restante</div><div class="stat-value ${signClass(totLeft)} num">${fmtCurrency(totLeft)}</div><div class="stat-foot">limites − gasto</div></div>
+    </div>
+    <div class="table-wrap" style="margin-top:16px"><table>
+      <thead><tr><th>Categoria</th><th class="right">Limite</th><th class="right">Gasto</th><th class="right">Pago</th><th class="right">Restante</th><th>Uso</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr>
+        <td>${escapeHtml(r.name)}${r.essential? ' <span class="badge grey">essencial</span>' : ''}</td>
+        <td class="right"><div class="currency-input bud-input"><span class="prefix">R$</span><input type="text" inputmode="decimal" autocomplete="off" class="currency-mask bud-limit" data-cat="${escapeHtml(r.name)}" value="${r.limit>0? fmtPlain(r.limit) : ''}" placeholder="sem limite" ${r.name==='Sem categoria'? 'disabled' : ''} aria-label="Limite de ${escapeHtml(r.name)}"></div></td>
+        <td class="right num ${r.spent>0? 'neg' : ''}">${fmtCurrency(r.spent)}</td>
+        <td class="right num">${fmtCurrency(r.paid)}</td>
+        <td class="right num ${r.left===null? '' : signClass(r.left)}">${r.left===null? '—' : fmtCurrency(r.left)}</td>
+        <td>${r.limit>0? `<div class="bud-uso"><div class="bud-bar"><i class="st-${r.status}" style="width:${Math.min(100,r.pct).toFixed(0)}%"></i></div><span class="bud-pct">${Math.round(r.pct)}%</span>${budgetBadge(r.status)}</div>` : budgetBadge('sem')}</td>
+      </tr>`).join('')}</tbody></table></div>`;
+}
+function wireOrcamento(){
+  wireCurrencyMasks(document.getElementById('report-body'));
+  $('#bud-cycle').onchange = (e)=>{ budgetOffset = parseInt(e.target.value,10); RENDERERS.relatorios(); };
+  $$('.bud-limit').forEach(inp=>inp.onchange = ()=>{
+    const name = inp.dataset.cat, v = parseCurrencyValue(inp.value);
+    let cat = state.categories.find(x=>x.name===name && x.type==='despesa');
+    if(!cat){ if(!(v>0)) return; cat = {id:uid(), name, type:'despesa', essential:false, status:'ativa'}; state.categories.push(cat); }
+    cat.limit = v>0? rnd2(v) : 0;
+    saveState(); RENDERERS.relatorios();
+  });
+}
+function dashLimitsHtml(){
+  const c = cycleAt(0), rows = budgetRows(c).filter(r=>r.limit>0);
+  if(!rows.length) return '';
+  return `<div class="card" style="margin-top:16px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap"><div class="stat-label">Limites do ${hasCycles()? 'ciclo' : 'mês'} · ${escapeHtml(cycleLabel(c))}</div><div class="dash-note" style="margin:0"><a href="#" data-goto="relatorios" data-sub="orcamento">Ver todos e editar</a></div></div>
+    ${rows.slice(0,5).map(r=>`<div class="bud-cr"><span class="dash-cat" title="${escapeHtml(r.name)}">${escapeHtml(r.name)}</span><div class="bud-bar"><i class="st-${r.status}" style="width:${Math.min(100,r.pct).toFixed(0)}%"></i></div><span class="num ${r.status==='estourou'? 'neg' : ''}">${fmtCurrency(r.spent)} <span class="bud-de">de ${fmtCurrency(r.limit)}</span></span></div>`).join('')}
+    ${rows.length>5? `<div class="dash-note">+ ${rows.length-5} categoria${rows.length-5===1? '' : 's'} com limite</div>` : ''}
+  </div>`;
+}
+function cycleBalanceChart(canvasId, back, fwd){
+  const sd = state.settings.primeiroDiaMes, labels = [], saldos = [], acumulados = [];
+  let c = cycleAt(-back), acc = accumulatedBeforeCycle(c);
+  for(let i=0;i<back+fwd+1;i++){
+    const net = cycleNet(c); acc += net.saldo;
+    labels.push(cycleShort(c)); saldos.push(rnd2(net.saldo)); acumulados.push(rnd2(acc));
+    c = cycleFor(addDaysToISO(c.to,1), sd);
+  }
+  const curIndex = back, un = hasCycles()? 'ciclo' : 'mês';
+  renderChart(canvasId,{
+    type:'line',
+    data:{ labels, datasets:[
+      { label:`Saldo do ${un}`, data:saldos, borderColor:CHART_COLORS.green, backgroundColor:CHART_COLORS.greenFill, tension:.3, fill:true, pointRadius:3, pointBackgroundColor:CHART_COLORS.green },
+      { label:'Saldo acumulado', data:acumulados, borderColor:CHART_COLORS.yellow, backgroundColor:'transparent', borderDash:[4,3], tension:.3, pointRadius:2, pointBackgroundColor:CHART_COLORS.yellow }
+    ]},
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ labels:{ usePointStyle:true, boxWidth:8 } }, tooltip:{ callbacks:{ label:(ctx)=> `${ctx.dataset.label}: ${fmtCurrency(ctx.raw)}` } } },
+      scales:{ x:{ grid:{ color:CHART_COLORS.line }, ticks:{ color:(ctx)=> ctx.index===curIndex? CHART_COLORS.ink : CHART_COLORS.inkSoft } }, y:{ grid:{ color:CHART_COLORS.line }, ticks:{ callback:(v)=>fmtCurrency(v) } } }
+    }
+  });
+}
 function projection(startMonth,n){
   const out=[];
   let acc = accumulatedBalance(addMonthsToKey(startMonth,-1));
@@ -978,12 +1124,12 @@ function endingCommitmentsInRange(startMonth,n){
   return notes;
 }
 function computeAlerts(){
-  const cur = todayMonthKey();
+  const cur = todayMonthKey(), un = hasCycles()? 'ciclo' : 'mês';
   const alerts=[];
-  const be = breakeven(cur);
-  if(be.status==='vermelho') alerts.push({sev:'rust',msg:`Seu mês está projetado para fechar negativo em ${fmtCurrency(Math.abs(be.margem))}.`});
+  const be = breakeven(cycleAt(0));   // o ciclo atual (ou o mês, se o seu mês começa no dia 1)
+  if(be.status==='vermelho') alerts.push({sev:'rust',msg:`Seu ${un} está projetado para fechar negativo em ${fmtCurrency(Math.abs(be.margem))}.`});
   else if(be.status==='amarelo') alerts.push({sev:'gold',msg:`Seu comprometimento de renda está alto (${be.pct.toFixed(0)}% da receita prevista).`});
-  endingCommitmentsInRange(cur,2).forEach(n=>alerts.push({sev:'gold',msg:n}));
+  endingCommitmentsCycles(2).forEach(n=>alerts.push({sev:'gold',msg:n}));
   state.goals.forEach(g=>{
     if(goalDone(g)) return;
     if(g.deadline){
@@ -998,6 +1144,7 @@ function computeAlerts(){
     const used = cardUsed(c.id);
     if(c.limit>0 && used/c.limit>0.85) alerts.push({sev:'rust',msg:`O cartão "${c.name}" está com ${(used/c.limit*100).toFixed(0)}% do limite comprometido.`});
   });
+  budgetAlerts().forEach(a=>alerts.push(a));
   const subsTotal = state.recurring.filter(r=>r.isSubscription && r.status==='ativa').reduce((a,r)=>a+Number(r.value),0);
   if(subsTotal>0) alerts.push({sev:'grey',msg:`Você gasta ${fmtCurrency(subsTotal)}/mês (${fmtCurrency(subsTotal*12)}/ano) em assinaturas.`});
   if(!alerts.length) alerts.push({sev:'green',msg:'Nenhum alerta no momento — seus números estão sob controle.'});
@@ -1099,6 +1246,7 @@ function wireCurrencyMasks(root){
 
 function fieldHtml(f,val){
   const v = val==null?'':val;
+  if(f.type==='note') return `<div class="modal-note">${f.html}</div>`;
   if(f.type==='select'){
     return `<div class="field"><label>${f.label}</label><select name="${f.name}" ${f.required?'required':''}>
       ${f.options.map(o=>`<option value="${escapeHtml(o.value)}" ${String(o.value)===String(v)?'selected':''}>${escapeHtml(o.label)}</option>`).join('')}
@@ -1548,9 +1696,11 @@ RENDERERS.dashboard = function(){
       </div>
     </div>
 
+    ${dashLimitsHtml()}
+
     ${alerts.length? `<details class="dash-alerts"><summary>Alertas (${alerts.length})</summary><div style="margin-top:10px">${alerts.map(a=>`<div class="alert-item ${a.sev==='rust'? 'rust' : ''}">${icon(a.sev==='rust'? 'alertTriangle' : 'info',16)}<span>${escapeHtml(a.msg)}</span></div>`).join('')}</div></details>` : ''}
   `;
-  $$('#view-dashboard [data-goto]').forEach(c=>c.onclick=(e)=>{ e.preventDefault(); switchView(c.dataset.goto); });
+  $$('#view-dashboard [data-goto]').forEach(c=>c.onclick=(e)=>{ e.preventDefault(); if(c.dataset.sub) reportSubtab = c.dataset.sub; switchView(c.dataset.goto); });
   $$('#view-dashboard .dash-chip').forEach(b=>b.onclick=()=>{ dashMode = b.dataset.dmode; RENDERERS.dashboard(); });
   wireDashboardHeader();
   const dcw = $('#view-dashboard .dc-wrap'); if(dcw) wireDashChart(dcw, pts);
@@ -2312,6 +2462,58 @@ function cardInvoices(card){
   });
   return list;
 }
+function adjustKeyOf(cardId, dueDate){ return 'inv-adjust|'+cardId+'|'+dueDate; }
+function applyInvoiceBankTotal(card, dueDate, bankTotal){
+  // Compara o total que o banco mostrou com o do Kivo. Se o banco for MAIOR (juros, tarifas), cria (ou atualiza) um
+  // lançamento de ajuste com a diferença. Se for menor ou igual, não inventa valor: avisa. Idempotente: pela chave.
+  bankTotal = rnd2(Number(bankTotal)||0);
+  const none = {status:'none', diff:0, row:null, message:'', undo(){}};
+  if(!(bankTotal>0)) return none;
+  const key = adjustKeyOf(card.id, dueDate);
+  const existing = state.transactions.find(t=>t.adjustKey===key);
+  const inv = cardInvoices(card).find(i=>i.dueDate===dueDate);
+  const base = rnd2((inv? inv.total : 0) - (existing? Number(existing.value)||0 : 0));
+  const diff = rnd2(bankTotal-base);
+  if(diff<=0){
+    if(existing) state.transactions = state.transactions.filter(t=>t!==existing);
+    const undo = ()=>{ if(existing) state.transactions.push(existing); };
+    return diff===0
+      ? {status:'equal', diff, base, row:null, undo, message:`A fatura já bate com o total do banco (${fmtCurrency(bankTotal)}).${existing? ' Removi o ajuste que existia.' : ''}`}
+      : {status:'lower', diff, base, row:null, undo, message:`O total do banco (${fmtCurrency(bankTotal)}) é menor que o do Kivo (${fmtCurrency(base)}). Confira se há lançamentos a mais ou estornos.${existing? ' Removi o ajuste que existia.' : ''}`};
+  }
+  if(existing){
+    const prev = existing.value; existing.value = diff;
+    return {status:'updated', diff, base, row:existing, undo(){ existing.value = prev; }, message:`Atualizei o ajuste da fatura para ${fmtCurrency(diff)}: agora ela bate com o banco (${fmtCurrency(bankTotal)}).`};
+  }
+  const monthKey = invoiceMonthFromDue(card, dueDate);
+  const row = {id:uid(), type:'despesa', source:'manual', description:`Ajuste da fatura ${card.name} (juros/tarifas)`,
+    category: state.categories.some(c=>c.type==='despesa' && c.name==='Cartão')? 'Cartão' : 'Outros',
+    value:diff, date:dueDate, month:monthKey, purchaseDate: closingDateOf(card, monthKey) || dueDate, status:'pendente',
+    cardId:card.id, paymentMethod:'Crédito', accountId:defaultAccountId(), createdAt:Date.now(), adjustKey:key};
+  state.transactions.push(row);
+  return {status:'added', diff, base, row, undo(){ state.transactions = state.transactions.filter(t=>t!==row); },
+    message:`Criei um lançamento de ${fmtCurrency(diff)} ("Ajuste da fatura") para a fatura bater com o banco (${fmtCurrency(bankTotal)}).`};
+}
+function bankTotalFields(){
+  return [{name:'bankTotal', label:'Total da fatura no banco (opcional)', type:'currency'},
+          {name:'bankHelp', type:'note', html:'Se o banco mostrar um valor maior (juros, tarifas), o Kivo cria um lançamento com a diferença. Pode deixar em branco.'}];
+}
+function openInvoiceBankModal(cardId, dueDate){
+  const card = state.cards.find(c=>c.id===cardId); if(!card) return;
+  const inv = cardInvoices(card).find(i=>i.dueDate===dueDate);
+  if(!inv || inv.paid) return;
+  openFormModal({
+    title:`Total do banco · fatura de ${monthLabel(dueDate.slice(0,7))}`,
+    fields:[{name:'info', type:'note', html:`${escapeHtml(card.name)} · no Kivo: <b>${fmtCurrency(inv.total)}</b> em ${inv.count} lançamento(s). Digite o total que o banco mostrou. Se for maior, o Kivo cria um lançamento com a diferença (juros, tarifas).`},
+            {name:'bankTotal', label:'Total da fatura no banco', type:'currency'}],
+    submitLabel:'Conferir',
+    onSubmit(v){
+      const r = applyInvoiceBankTotal(card, dueDate, v.bankTotal);
+      saveState(); renderAll();
+      showToast(r.message || 'Informe o total que o banco mostrou para conferir.', r.status==='lower'? 'error' : '');
+    }
+  });
+}
 function closeInvoice(cardId, dueDate){
   const card = state.cards.find(c=>c.id===cardId); if(!card) return;
   const inv = cardInvoices(card).find(i=>i.dueDate===dueDate);
@@ -2325,9 +2527,16 @@ function openCloseInvoiceModal(cardId, dueDate){
   const card = state.cards.find(c=>c.id===cardId); if(!card) return;
   const inv = cardInvoices(card).find(i=>i.dueDate===dueDate);
   if(!inv || inv.paid || inv.manualClosed) return;
-  confirmModal(`Fechar a fatura de ${monthLabel(dueDate.slice(0,7))}?`,
-    `${card.name} · vence ${fmtDate(dueDate)} · ${inv.count} lançamento(s) · total ${fmtCurrency(inv.total)}. Depois de fechada, o que você lançar nesse cartão passa a ir para a próxima fatura. Se precisar, dá para reabrir.`,
-    ()=>closeInvoice(cardId, dueDate), 'Confirmar fechamento', 'primary');
+  openFormModal({
+    title:`Fechar a fatura de ${monthLabel(dueDate.slice(0,7))}?`,
+    fields:[{name:'info', type:'note', html:`${escapeHtml(card.name)} · vence ${fmtDate(dueDate)} · ${inv.count} lançamento(s) · total <b>${fmtCurrency(inv.total)}</b> no Kivo. Depois de fechada, o que você lançar nesse cartão passa a ir para a próxima fatura. Se precisar, dá para reabrir.`}, ...bankTotalFields()],
+    submitLabel:'Confirmar fechamento',
+    onSubmit(v){
+      const r = applyInvoiceBankTotal(card, dueDate, v.bankTotal);   // antes de fechar, para o total guardado já incluir o ajuste
+      closeInvoice(cardId, dueDate);
+      if(r.message) showToast(r.message, r.status==='lower'? 'error' : '');
+    }
+  });
 }
 function reopenInvoice(cardId, dueDate){
   const card = state.cards.find(c=>c.id===cardId);
@@ -2344,20 +2553,25 @@ function openPayInvoiceModal(cardId, dueDate){
     title:`Pagar fatura ${card.name} · ${fmtCurrency(info.total)}`,
     initial:{accountId:defaultAccountId(), paidAt:todayISO()},
     fields:[{name:'paidAt',label:'Pago em',type:'date',required:true},
-            {name:'accountId',label:`Conta de onde saiu o pagamento · vence ${fmtDate(info.dueDate)} · ${info.count} lançamento(s)`,type:'select',options:accountOptions()}],
+            {name:'accountId',label:`Conta de onde saiu o pagamento · vence ${fmtDate(info.dueDate)} · ${info.count} lançamento(s)`,type:'select',options:accountOptions()},
+            ...bankTotalFields()],
     submitLabel:'Marcar como paga',
     onSubmit(v){
+      const adj = applyInvoiceBankTotal(card, info.dueDate, v.bankTotal);   // se o banco cobrou mais, o ajuste entra na fatura e é pago junto
+      const cur = invoiceInfoFor(card.id, info.dueDate) || info;
+      if(adj.message) showToast(adj.message, adj.status==='lower'? 'error' : '');
       const snaps = [];
-      info.ids.forEach(id=>{
+      cur.ids.forEach(id=>{
         const t = state.transactions.find(x=>x.id===id);
         if(t){ snaps.push([t, snapshotPay(t)]); t.status = 'pago'; t.paidAt = v.paidAt || todayISO(); t.forceCount = true; t.preSettled = false; t.accountId = v.accountId || t.accountId || defaultAccountId(); }
       });
       card.closings = card.closings || {};
       const hadClosing = !!card.closings[info.dueDate];
-      if(!hadClosing) card.closings[info.dueDate] = { closedAt: Date.now(), total: info.total };   // pagar implica fatura fechada
+      if(!hadClosing) card.closings[info.dueDate] = { closedAt: Date.now(), total: cur.total };   // pagar implica fatura fechada
       saveState(); renderAll();
       showToast(`Fatura de ${monthLabel(info.dueDate.slice(0,7))} marcada como paga.`, '', {label:'Desfazer', fn:()=>{
         snaps.forEach(([t,p])=>applySnapshot(t,p));
+        adj.undo();
         if(!hadClosing && card.closings) delete card.closings[info.dueDate];
         saveState(); renderAll(); showToast('Desfeito.');
       }});
@@ -2373,8 +2587,8 @@ function invoiceCardHtml(card, inv){
   const key = `${card.id}|${inv.dueDate}`;
   const actions =
     inv.status==='aberta'  ? `<button class="btn small primary" data-inv-close="${key}">Fechar fatura</button>` :
-    inv.status==='fechou'  ? `<button class="btn small primary" data-inv-close="${key}">Confirmar fechamento</button><button class="btn small" data-inv-pay="${key}">Marcar como paga</button>` :
-    inv.status==='fechada' ? `<button class="btn small primary" data-inv-pay="${key}">Marcar como paga</button><button class="btn small" data-inv-reopen="${key}">Reabrir</button>` :
+    inv.status==='fechou'  ? `<button class="btn small primary" data-inv-close="${key}">Confirmar fechamento</button><button class="btn small" data-inv-pay="${key}">Marcar como paga</button><button class="btn small" data-inv-bank="${key}">Total do banco</button>` :
+    inv.status==='fechada' ? `<button class="btn small primary" data-inv-pay="${key}">Marcar como paga</button><button class="btn small" data-inv-bank="${key}">Total do banco</button><button class="btn small" data-inv-reopen="${key}">Reabrir</button>` :
     inv.status==='paga'    ? `<button class="btn small" data-inv-unpay="${key}">Desfazer pagamento</button>` : '';
   const rows = inv.items.slice().sort((a,b)=>(a.purchaseDate||a.date).localeCompare(b.purchaseDate||b.date));
   return `<div class="card invoice-card ${inv.status}">
@@ -2451,6 +2665,7 @@ RENDERERS.parcelamentos = function(){
   $$('[data-inv-close]').forEach(b=>b.onclick=()=>{ const [c,d] = b.dataset.invClose.split('|'); openCloseInvoiceModal(c,d); });
   $$('[data-inv-pay]').forEach(b=>b.onclick=()=>{ const [c,d] = b.dataset.invPay.split('|'); openPayInvoiceModal(c,d); });
   $$('[data-inv-reopen]').forEach(b=>b.onclick=()=>{ const [c,d] = b.dataset.invReopen.split('|'); reopenInvoice(c,d); });
+  $$('[data-inv-bank]').forEach(b=>b.onclick=()=>{ const [c,d] = b.dataset.invBank.split('|'); openInvoiceBankModal(c,d); });
   $$('[data-inv-unpay]').forEach(b=>b.onclick=()=>{ const [c,d] = b.dataset.invUnpay.split('|'); undoInvoicePayment(c,d); });
   $$('[data-edit-inst]').forEach(b=>b.onclick=()=>openInstallmentModal(state.installments.find(i=>i.id===b.dataset.editInst)));
   $$('[data-del-inst]').forEach(b=>b.onclick=()=>confirmModal('Excluir parcelamento?','As parcelas já lançadas em Lançamentos também serão removidas.',()=>{
@@ -2466,7 +2681,7 @@ RENDERERS.parcelamentos = function(){
     renderChart('chart-invoice-compare',{
       type:'bar',
       data:{ labels: data.map(d=>monthLabelShort(d.month)), datasets:[
-        { label:'Total da fatura', data: data.map(d=>Math.round(d.total*100)/100), backgroundColor:CHART_COLORS.accentFill, borderRadius:5, maxBarThickness:40 }
+        { label:'Total da fatura', data: data.map(d=>Math.round(d.total*100)/100), backgroundColor:CHART_COLORS.accentFill, borderRadius:0, maxBarThickness:40 }
       ]},
       options:{
         responsive:true, maintainAspectRatio:false,
@@ -2772,8 +2987,8 @@ function openGoalModal(g){
 
 /* ===================== RELATÓRIOS ===================== */
 let reportSubtab = 'resumo';
-let compMonthA = todayMonthKey();
-let compMonthB = addMonthsToKey(todayMonthKey(),-1);
+let compCycleA = 0;    // 0 = ciclo atual
+let compCycleB = -1;   // -1 = ciclo anterior
 let reportModeInit = false;
 let reportMode = 'mes';          // 'mes' | 'ciclo' | '30d' | 'ano' | 'custom'
 let reportCustom = {from:'', to:''};
@@ -2846,17 +3061,18 @@ RENDERERS.relatorios = function(){
   const usesPeriod = PERIOD_SUBTABS.includes(reportSubtab);
   const per = reportPeriod();
   $('#view-relatorios').innerHTML = `
-    <div class="view-head"><div><h1>Relatórios</h1><div class="view-sub">Pareto 80/20, ponto de equilíbrio e projeção de 12 meses</div></div>
+    <div class="view-head"><div><h1>Relatórios</h1><div class="view-sub">Pareto 80/20, ponto de equilíbrio e projeção de 12 ${hasCycles()? 'ciclos' : 'meses'}</div></div>
       ${usesPeriod? periodNavHtml(per) : ''}
     </div>
     ${usesPeriod? periodBarHtml() : ''}
     <div class="subtabs">
       <button class="subtab" data-sub="resumo">Resumo</button>
-      <button class="subtab" data-sub="comparativo">Comparativo mensal</button>
+      <button class="subtab" data-sub="comparativo">${hasCycles()? 'Comparativo de ciclos' : 'Comparativo mensal'}</button>
       <button class="subtab" data-sub="graficos">Gráficos</button>
       <button class="subtab" data-sub="pareto">Pareto 80/20</button>
       <button class="subtab" data-sub="equilibrio">Ponto de equilíbrio</button>
-      <button class="subtab" data-sub="projecao">Projeção 12 meses</button>
+      <button class="subtab" data-sub="orcamento">Orçamento por categoria</button>
+      <button class="subtab" data-sub="projecao">Projeção 12 ${hasCycles()? 'ciclos' : 'meses'}</button>
       <button class="subtab" data-sub="simulador">Simulador</button>
     </div>
     <div id="report-body"></div>
@@ -2878,6 +3094,7 @@ RENDERERS.relatorios = function(){
   else if(reportSubtab==='graficos') { body.innerHTML = renderGraficos(); wireGraficos(); }
   else if(reportSubtab==='pareto') body.innerHTML = renderPareto();
   else if(reportSubtab==='equilibrio') body.innerHTML = renderEquilibrio();
+  else if(reportSubtab==='orcamento') { body.innerHTML = renderOrcamento(); wireOrcamento(); }
   else if(reportSubtab==='projecao') body.innerHTML = renderProjecao();
   else if(reportSubtab==='simulador') { body.innerHTML = renderSimulador(); wireSimulador(); }
 };
@@ -2896,8 +3113,9 @@ function changeBadge(pct,goodDirection){
   return `<span class="badge ${color}">${arrow} ${Math.abs(rounded).toFixed(1)}%</span>`;
 }
 function renderComparativo(){
-  const cur = monthSummary(compMonthA);
-  const prev = monthSummary(compMonthB);
+  const U = hasCycles(), cA = cycleAt(compCycleA), cB = cycleAt(compCycleB), nameA = cycleLabel(cA), nameB = cycleLabel(cB);
+  const cur = periodSummary(cA);
+  const prev = periodSummary(cB);
   const pctReceitas = pctChange(cur.plannedReceitas, prev.plannedReceitas);
   const pctDespesas = pctChange(cur.plannedDespesas, prev.plannedDespesas);
   const saldoCur = cur.plannedReceitas-cur.plannedDespesas, saldoPrev = prev.plannedReceitas-prev.plannedDespesas;
@@ -2910,15 +3128,15 @@ function renderComparativo(){
   }).sort((a,b)=>b.c-a.c);
 
   return `
-    <div class="field-row" style="max-width:420px;margin-bottom:18px">
-      <div class="field"><label>Mês A</label><input type="month" id="comp-month-a" value="${compMonthA}"></div>
-      <div class="field"><label>Mês B</label><input type="month" id="comp-month-b" value="${compMonthB}"></div>
+    <div class="field-row" style="max-width:560px;margin-bottom:18px">
+      <div class="field"><label>${U? 'Ciclo A' : 'Mês A'}</label><select id="comp-cycle-a">${cycleOptions(compCycleA)}</select></div>
+      <div class="field"><label>${U? 'Ciclo B' : 'Mês B'}</label><select id="comp-cycle-b">${cycleOptions(compCycleB)}</select></div>
     </div>
-    <div class="help-text" style="margin-top:-8px">Comparando ${monthLabel(compMonthA)} com ${monthLabel(compMonthB)}.</div>
+    <div class="help-text" style="margin-top:-8px">Comparando ${nameA} com ${nameB}.</div>
     <div class="grid grid-3">
-      <div class="card"><div class="stat-label">Receitas</div><div class="stat-value pos num">${fmtCurrency(cur.plannedReceitas)}</div><div class="stat-foot">${monthLabel(compMonthB)}: ${fmtCurrency(prev.plannedReceitas)}</div><div style="margin-top:8px">${changeBadge(pctReceitas,'up')}</div></div>
-      <div class="card"><div class="stat-label">Despesas</div><div class="stat-value neg num">${fmtCurrency(cur.plannedDespesas)}</div><div class="stat-foot">${monthLabel(compMonthB)}: ${fmtCurrency(prev.plannedDespesas)}</div><div style="margin-top:8px">${changeBadge(pctDespesas,'down')}</div></div>
-      <div class="card"><div class="stat-label">Saldo</div><div class="stat-value ${saldoCur>=0?'pos':'neg'} num">${fmtCurrency(saldoCur)}</div><div class="stat-foot">${monthLabel(compMonthB)}: ${fmtCurrency(saldoPrev)}</div><div style="margin-top:8px">${changeBadge(pctSaldo,'up')}</div></div>
+      <div class="card"><div class="stat-label">Receitas</div><div class="stat-value pos num">${fmtCurrency(cur.plannedReceitas)}</div><div class="stat-foot">${nameB}: ${fmtCurrency(prev.plannedReceitas)}</div><div style="margin-top:8px">${changeBadge(pctReceitas,'up')}</div></div>
+      <div class="card"><div class="stat-label">Despesas</div><div class="stat-value neg num">${fmtCurrency(cur.plannedDespesas)}</div><div class="stat-foot">${nameB}: ${fmtCurrency(prev.plannedDespesas)}</div><div style="margin-top:8px">${changeBadge(pctDespesas,'down')}</div></div>
+      <div class="card"><div class="stat-label">Saldo</div><div class="stat-value ${saldoCur>=0?'pos':'neg'} num">${fmtCurrency(saldoCur)}</div><div class="stat-foot">${nameB}: ${fmtCurrency(saldoPrev)}</div><div style="margin-top:8px">${changeBadge(pctSaldo,'up')}</div></div>
     </div>
 
     <div class="section-title"><h2>Receitas, despesas e saldo</h2></div>
@@ -2929,30 +3147,31 @@ function renderComparativo(){
 
     <div class="section-title"><h2>Tabela detalhada</h2></div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Categoria</th><th class="right">${monthLabelShort(compMonthA)}</th><th class="right">${monthLabelShort(compMonthB)}</th><th class="right">Diferença</th><th class="right">Variação</th></tr></thead>
+      <thead><tr><th>Categoria</th><th class="right">${cycleShort(cA)}</th><th class="right">${cycleShort(cB)}</th><th class="right">Diferença</th><th class="right">Variação</th></tr></thead>
       <tbody>${catRows.length? catRows.map(r=>`<tr>
         <td>${escapeHtml(r.cat)}</td>
         <td class="right num neg">${fmtCurrency(r.c)}</td>
         <td class="right num neg">${fmtCurrency(r.p)}</td>
         <td class="right num" style="color:${r.diff>0?'var(--red)':r.diff<0?'var(--green)':'var(--ink-soft)'}">${r.diff>=0?'+':''}${fmtCurrency(r.diff)}</td>
         <td class="right">${changeBadge(r.pct,'down')}</td>
-      </tr>`).join('') : emptyRow(5,'barchart','Sem dados para comparar','Cadastre despesas em pelo menos um dos dois meses.')}</tbody>
+      </tr>`).join('') : emptyRow(5,'barchart','Sem dados para comparar','Cadastre despesas em pelo menos um dos dois '+(U? 'ciclos' : 'meses')+'.')}</tbody>
     </table></div>
   `;
 }
 function wireComparativo(){
-  $('#comp-month-a').onchange=(e)=>{ if(e.target.value){ compMonthA=e.target.value; RENDERERS.relatorios(); } };
-  $('#comp-month-b').onchange=(e)=>{ if(e.target.value){ compMonthB=e.target.value; RENDERERS.relatorios(); } };
+  $('#comp-cycle-a').onchange=(e)=>{ compCycleA = parseInt(e.target.value,10); RENDERERS.relatorios(); };
+  $('#comp-cycle-b').onchange=(e)=>{ compCycleB = parseInt(e.target.value,10); RENDERERS.relatorios(); };
 
-  const curS = monthSummary(compMonthA), prevS = monthSummary(compMonthB);
+  const cA = cycleAt(compCycleA), cB = cycleAt(compCycleB);
+  const curS = periodSummary(cA), prevS = periodSummary(cB);
   const saldoA = curS.plannedReceitas-curS.plannedDespesas, saldoB = prevS.plannedReceitas-prevS.plannedDespesas;
-  const labelA = monthLabelShort(compMonthA), labelB = monthLabelShort(compMonthB);
+  const labelA = cycleShort(cA), labelB = cycleShort(cB);
 
   renderChart('chart-comp-overview',{
     type:'bar',
     data:{ labels:['Receitas','Despesas','Saldo'], datasets:[
-      { label:labelA, data:[curS.plannedReceitas,curS.plannedDespesas,saldoA], backgroundColor:CHART_COLORS.green, borderRadius:5, maxBarThickness:46 },
-      { label:labelB, data:[prevS.plannedReceitas,prevS.plannedDespesas,saldoB], backgroundColor:CHART_COLORS.accentFill, borderRadius:5, maxBarThickness:46 }
+      { label:labelA, data:[curS.plannedReceitas,curS.plannedDespesas,saldoA], backgroundColor:CHART_COLORS.green, borderRadius:0, maxBarThickness:46 },
+      { label:labelB, data:[prevS.plannedReceitas,prevS.plannedDespesas,saldoB], backgroundColor:CHART_COLORS.accentFill, borderRadius:0, maxBarThickness:46 }
     ]},
     options:{
       responsive:true, maintainAspectRatio:false,
@@ -2968,8 +3187,8 @@ function wireComparativo(){
   renderChart('chart-comp-categories',{
     type:'bar',
     data:{ labels: catRows.map(r=>r.cat), datasets:[
-      { label:labelA, data:catRows.map(r=>Math.round(r.c*100)/100), backgroundColor:CHART_COLORS.green, borderRadius:4, maxBarThickness:18 },
-      { label:labelB, data:catRows.map(r=>Math.round(r.p*100)/100), backgroundColor:CHART_COLORS.accentFill, borderRadius:4, maxBarThickness:18 }
+      { label:labelA, data:catRows.map(r=>Math.round(r.c*100)/100), backgroundColor:CHART_COLORS.green, borderRadius:0, maxBarThickness:18 },
+      { label:labelB, data:catRows.map(r=>Math.round(r.p*100)/100), backgroundColor:CHART_COLORS.accentFill, borderRadius:0, maxBarThickness:18 }
     ]},
     options:{
       responsive:true, maintainAspectRatio:false, indexAxis:'y',
@@ -2984,13 +3203,13 @@ function renderGraficos(){
     <div class="card"><div class="chart-box"><canvas id="chart-report-category"></canvas></div></div>
     <div class="help-text" style="margin-top:8px">Barras amarelas = categorias essenciais · barras verdes = demais categorias.</div>
 
-    <div class="section-title"><h2>Saldo mensal e acumulado (12 meses)</h2></div>
+    <div class="section-title"><h2>Saldo ${hasCycles()? 'por ciclo' : 'mensal'} e acumulado (13 ${hasCycles()? 'ciclos' : 'meses'}: 6 anteriores, o atual e 6 próximos)</h2></div>
     <div class="card"><div class="chart-box"><canvas id="chart-report-balance"></canvas></div></div>
   `;
 }
 function wireGraficos(){
   categoryBarChart('chart-report-category', reportPeriod());
-  balanceEvolutionChart('chart-report-balance', 6, 6);
+  cycleBalanceChart('chart-report-balance', 6, 6);
 }
 function renderResumo(){
   const per = reportPeriod();
@@ -3029,9 +3248,9 @@ function renderEquilibrio(){
   </div>`;
 }
 function renderProjecao(){
-  const proj = projection(todayMonthKey(),12);
-  const notes = endingCommitmentsInRange(todayMonthKey(),12);
-  return `<div class="table-wrap"><table><thead><tr><th>Mês</th><th class="right">Receitas</th><th class="right">Despesas</th><th class="right">Saldo</th><th class="right">Acumulado</th></tr></thead>
+  const proj = projectionCycles(12);
+  const notes = endingCommitmentsCycles(12);
+  return `<div class="table-wrap"><table><thead><tr><th>${hasCycles()? 'Ciclo' : 'Mês'}</th><th class="right">Receitas</th><th class="right">Despesas</th><th class="right">Saldo</th><th class="right">Acumulado</th></tr></thead>
     <tbody>${proj.map(p=>`<tr><td>${p.label}</td><td class="right num pos">${fmtCurrency(p.receitas)}</td><td class="right num neg">${fmtCurrency(p.despesas)}</td><td class="right num ${signClass(p.saldo)}">${fmtCurrency(p.saldo)}</td><td class="right num ${signClass(p.saldoAcumulado)}">${fmtCurrency(p.saldoAcumulado)}</td></tr>`).join('')}</tbody></table></div>
     ${notes.length? `<div class="section-title"><h2>Mudanças previstas</h2></div>${notes.map(n=>`<div class="alert-item" style="background:var(--green-bg);color:var(--green)">${icon('checkCircle',16)}<span>${escapeHtml(n)}</span></div>`).join('')}` : ''}`;
 }
@@ -3049,10 +3268,10 @@ function wireSimulador(){
   $('#sim-run').onclick=()=>{
     const dR = parseCurrencyValue($('#sim-receita').value);
     const dD = parseCurrencyValue($('#sim-despesa').value);
-    const proj = projection(todayMonthKey(),12).map(p=>({...p,receitas:p.receitas+dR,despesas:p.despesas+dD,saldo:(p.receitas+dR)-(p.despesas+dD)}));
-    let acc = accumulatedBalance(addMonthsToKey(todayMonthKey(),-1));
+    const proj = projectionCycles(12).map(p=>({...p,receitas:p.receitas+dR,despesas:p.despesas+dD,saldo:(p.receitas+dR)-(p.despesas+dD)}));
+    let acc = accumulatedBeforeCycle(cycleAt(0));
     proj.forEach(p=>{acc+=p.saldo;p.saldoAcumulado=acc;});
-    $('#sim-result').innerHTML = `<div class="table-wrap"><table><thead><tr><th>Mês</th><th class="right">Saldo simulado</th><th class="right">Acumulado</th></tr></thead>
+    $('#sim-result').innerHTML = `<div class="table-wrap"><table><thead><tr><th>${hasCycles()? 'Ciclo' : 'Mês'}</th><th class="right">Saldo simulado</th><th class="right">Acumulado</th></tr></thead>
       <tbody>${proj.map(p=>`<tr><td>${p.label}</td><td class="right num">${fmtCurrency(p.saldo)}</td><td class="right num">${fmtCurrency(p.saldoAcumulado)}</td></tr>`).join('')}</tbody></table></div>
       <div class="help-text">Simulação descartável — nada foi salvo nos seus dados reais.</div>`;
   };
@@ -3154,9 +3373,10 @@ function openCategoryModal(c){
       {name:'name',label:'Nome',type:'text',required:true},
       {row:[{name:'type',label:'Tipo',type:'select',options:[{value:'despesa',label:'Despesa'},{value:'receita',label:'Receita'}]},
              {name:'status',label:'Status',type:'select',options:[{value:'ativa',label:'Ativa'},{value:'inativa',label:'Inativa'}]}]},
-      {name:'essential',label:'Categoria essencial',type:'checkbox'}
+      {name:'essential',label:'Categoria essencial',type:'checkbox'},
+      {name:'limit',label:'Limite de gasto por ciclo (opcional, só para despesas)',type:'currency'}
     ],
-    onSubmit(v){ if(isEdit) Object.assign(c,v); else state.categories.push({id:uid(),...v}); saveState(); renderAll(); },
+    onSubmit(v){ v.limit = Number(v.limit)||0; if(isEdit) Object.assign(c,v); else state.categories.push({id:uid(),...v}); saveState(); renderAll(); },
     onDelete: isEdit? ()=>{confirmModal('Excluir categoria?','Tem certeza?',()=>{state.categories=state.categories.filter(x=>x.id!==c.id);saveState();closeModal();renderAll();});}:null
   });
 }

@@ -3,9 +3,13 @@
   "private": true,
   "description": "Testes do Kivo: simulação do app inteiro (todas as telas, dois temas) e checagens do CSS/tema.",
   "scripts": {
-    "test": "node smoke.test.js && node css-theme.test.js",
+    "test": "node cycles.test.js && node budget.test.js && node invoice-bank.test.js && node alerts.test.js && node smoke.test.js && node css-theme.test.js",
     "smoke": "node smoke.test.js",
-    "css": "node css-theme.test.js"
+    "css": "node css-theme.test.js",
+    "cycles": "node cycles.test.js",
+    "budget": "node budget.test.js",
+    "invoice": "node invoice-bank.test.js",
+    "alerts": "node alerts.test.js"
   },
   "devDependencies": { "esbuild": "^0.28.2", "jsdom": "^31.0.1" }
 }

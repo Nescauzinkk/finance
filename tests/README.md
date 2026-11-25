@@ -12,6 +12,11 @@ npm test
   (normal, usuário novo sem nada e dados "feios"), visita todas as telas, clica em todos os controles nos
   dois temas e falha se houver erro de execução ou texto estranho (`undefined`, `NaN`, `[object Object]`).
   Também confere se Dashboard, Lançamentos e Relatórios abrem no mesmo período.
+- **cycles.test.js** testa a lógica dos ciclos (janelas, rótulos, acumulado, projeção, compromissos que terminam),
+  inclusive uma verificação de propriedade: 12 ciclos seguidos não deixam buraco nem sobreposição e somam o período inteiro.
+- **budget.test.js** testa o orçamento por categoria: gasto x limite por ciclo, as fronteiras (79,9% dentro, 80% e 100% atenção, acima de 100% estourou), a ordem, os alertas, a aba e o cartão do Dashboard.
+- **invoice-bank.test.js** testa o ajuste da fatura pelo total do banco (cria, atualiza sem duplicar, remove, banco menor, bordas).
+- **alerts.test.js** prova que o alerta de equilíbrio usa o ciclo e não o mês de calendário.
 - **css-theme.test.js** confere o CSS e o `index.html`: variáveis definidas, nada do neon antigo,
   contraste de cores nos temas escuro e claro e o script que escolhe o tema antes de a página aparecer.
 

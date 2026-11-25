@@ -40,6 +40,12 @@ function buildState(variant){
     tx({description:'Compra cartão',category:'Mercado',value:230,date:D(5),status:'pendente',cardId:'nb',paymentMethod:'Crédito',purchaseDate:D(-6)}),
     {id:'tj',type:'ajuste',source:'manual',description:'Ajuste de saldo',category:'Ajuste de saldo',value:-50,date:D(-5),month:D(-5).slice(0,7),status:'pago',accountId:'a1',paymentMethod:'—'},
     {id:'tt',type:'transferencia',source:'manual',description:'Para poupança',category:'Transferência',value:200,date:D(-3),month:D(-3).slice(0,7),status:'pago',accountId:'a1',toAccountId:'a2',paymentMethod:'—'}]};
+  if(variant==='normal'){   // com limites por categoria
+    const dc=(name,essential,extra)=>({id:'c-'+name,name,type:'despesa',essential:!!essential,status:'ativa',...extra});
+    S.categories=[dc('Moradia',1),dc('Casa/Família',1),dc('Transporte',1),dc('Gasolina',1),dc('Carro'),dc('Cartão'),dc('Assinaturas'),dc('Alimentação',1,{limit:50}),dc('Saúde',1),dc('Lazer',0,{limit:100000}),dc('Educação'),dc('Dívidas'),dc('Investimentos'),dc('Outros'),
+      {id:'r1',name:'Salário',type:'receita',essential:false,status:'ativa'},{id:'r2',name:'Pensão',type:'receita',essential:false,status:'ativa'},{id:'r3',name:'Freela',type:'receita',essential:false,status:'ativa'}];
+    S.transactions.push(tx({description:'Gasto de hoje',category:'Alimentação',value:80,date:D(0),paidAt:D(0)}));
+  }
   if(variant==='borda'){   // dados "feios": o que costuma quebrar telas
     S.accounts[0].initialBalance=-1500; S.accounts.push({id:'a4',name:'Sem saldo inicial',type:'conta',status:'ativa',createdAt:Date.now()});
     S.cards=[{id:'nb',name:'Sem fechamento',limit:0,dueDay:11},{id:'c2',name:'Cartão vazio',limit:1000,closingDay:25,dueDay:5}];
@@ -93,6 +99,52 @@ async function runVariant(variant,bundleText){
   visit('lancamentos'); await wait(15); info.lanc=(doc.querySelector('#view-lancamentos .lp-btn.active')||{dataset:{}}).dataset.lpmode; info.lancCicloBtn=!!doc.querySelector('#view-lancamentos .lp-btn[data-lpmode="ciclo"]');
   visit('relatorios'); await wait(15); info.rel=(doc.querySelector('#view-relatorios .period-btn.active')||{dataset:{}}).dataset.pmode;
   visit('dashboard'); await wait(15); info.dash=(doc.querySelector('#view-dashboard .dash-chip.active')||{dataset:{}}).dataset.dmode;
+  // ---- Relatórios por ciclo (ou por mês, se o seu mês começa no dia 1) ----
+  const U = variant!=='vazio'; const rel={};
+  visit('relatorios'); await wait(15);
+  const tabs=[...doc.querySelectorAll('#view-relatorios .subtab')].map(b=>b.textContent.trim());
+  rel.abas=tabs.join(' | ');
+  const clickTab=async(sub)=>{ doc.querySelector(`#view-relatorios .subtab[data-sub="${sub}"]`).click(); await wait(15); };
+  await clickTab('projecao'); rel.projLinhas=doc.querySelectorAll('#report-body tbody tr').length; rel.projCab=(doc.querySelector('#report-body thead th')||{}).textContent; rel.projPrimeira=(doc.querySelector('#report-body tbody td')||{}).textContent;
+  await clickTab('comparativo'); rel.compSelects=doc.querySelectorAll('#report-body select').length; rel.compOpcoes=(doc.querySelector('#comp-cycle-a')||{options:[]}).options.length;
+  if(doc.querySelector('#comp-cycle-b')){ const sel=doc.querySelector('#comp-cycle-b'); sel.value='-2'; sel.dispatchEvent(new w.Event('change')); await wait(15); rel.compTrocou=doc.querySelector('#comp-cycle-b').value==='-2'; }
+  await clickTab('graficos'); rel.graf=([...doc.querySelectorAll('#report-body h2')].map(h=>h.textContent).find(t=>/^Saldo/.test(t))||'');
+  await clickTab('simulador'); const run=doc.getElementById('sim-run'); if(run){ run.click(); await wait(15); rel.sim=(doc.querySelector('#sim-result thead th')||{}).textContent; rel.simLinhas=doc.querySelectorAll('#sim-result tbody tr').length; }
+  await clickTab('resumo');
+  info.rel2=rel;
+  // ---- Orçamento por categoria ----
+  const orc={}; await clickTab('orcamento');
+  const rowOf=(name)=>[...doc.querySelectorAll('#report-body tbody tr')].find(r=>r.cells[0].textContent.trim().startsWith(name));
+  const flat=(el)=>(el? el.textContent : '').replace(/\s+/g,' ').replace(/\u00a0/g,' ');
+  orc.linhas=doc.querySelectorAll('#report-body tbody tr').length; orc.abas=/Orçamento por categoria/.test(rel.abas);
+  visit('dashboard'); await wait(15);
+  if(variant==='normal'){
+    orc.linha=flat(rowOf('Alimentação')||null) || (visit('relatorios'), '');
+    orc.dashCard=flat(doc.querySelector('#view-dashboard .bud-cr')); orc.alerta=flat(doc.querySelector('#view-dashboard .dash-alerts'));
+    const link=doc.querySelector('#view-dashboard a[data-sub="orcamento"]'); if(link){ link.click(); await wait(15); orc.viaLink=!!doc.querySelector('#bud-cycle'); }
+    orc.linha=flat(rowOf('Alimentação'));
+    const inp=doc.querySelector('input.bud-limit[data-cat="Alimentação"]'); inp.value='1000,00'; inp.dispatchEvent(new w.Event('change')); await wait(15);
+    orc.depois=flat(rowOf('Alimentação'));
+    visit('dashboard'); await wait(15); orc.alertaDepois=flat(doc.querySelector('#view-dashboard .dash-alerts')); orc.cartaoDepois=[...doc.querySelectorAll('#view-dashboard .bud-cr .dash-cat')].map(e=>e.textContent).join();
+  } else { orc.semCartao=!doc.querySelector('#view-dashboard .bud-cr'); }
+  info.orc=orc;
+  // ---- Total da fatura no banco ----
+  const fat={}; visit('parcelamentos'); await wait(15);
+  const invCards=()=>[...doc.querySelectorAll('#view-parcelamentos .invoice-card')];
+  const closeBtn=doc.querySelector('#view-parcelamentos [data-inv-close]');
+  if(variant==='normal' && closeBtn){
+    closeBtn.click(); await wait(10);
+    fat.campo=!!doc.querySelector('#modal-form [name="bankTotal"]'); fat.botao=/Confirmar fechamento/.test(doc.querySelector('#modal-form .btn.primary').textContent);
+    doc.querySelector('#modal-form [name="bankTotal"]').value='99999,00';
+    doc.getElementById('modal-form').dispatchEvent(new w.Event('submit',{cancelable:true,bubbles:true})); await wait(20);
+    const c=invCards().find(el=>/99\.999,00/.test(flat(el)));
+    fat.total=!!c; fat.ajuste=c? /Ajuste da fatura/.test(flat(c)) : false; fat.toast=flat(doc.getElementById('toasts'));
+    fat.fechada=c? /Fechada/.test((c.querySelector('.badge')||{textContent:''}).textContent) : false;
+    const bankBtn=c && c.querySelector('[data-inv-bank]'); fat.temBotaoBanco=!!bankBtn;
+    if(bankBtn){ bankBtn.click(); await wait(10); doc.querySelector('#modal-form [name="bankTotal"]').value='1,00'; doc.getElementById('modal-form').dispatchEvent(new w.Event('submit',{cancelable:true,bubbles:true})); await wait(20);
+      fat.menor=/menor que o do Kivo/.test(flat(doc.getElementById('toasts'))); fat.ajusteSumiu=!invCards().some(el=>/Ajuste da fatura/.test(flat(el))); }
+  }
+  info.fat=fat;
   await pass('escuro');
   doc.getElementById('btn-theme').click(); info.tema=doc.documentElement.getAttribute('data-theme'); await pass('claro');
   doc.getElementById('btn-theme').click();
@@ -105,7 +157,20 @@ async function runVariant(variant,bundleText){
   for(const v of ['normal','borda','vazio']){
     const r=await runVariant(v,code); const ciclo=esperado[v].ciclo; const modo=ciclo? 'ciclo' : 'mes';
     const coerente=r.info.lanc===modo && r.info.rel===modo && r.info.dash===modo && r.info.lancCicloBtn===ciclo;
-    const ok=r.errors.length===0 && r.problems.length===0 && r.temaTrocou && coerente;
+    const q=r.info.rel2, unidade=ciclo? 'ciclo' : 'mês';
+    const relOk = q.projLinhas===12 && q.compSelects===2 && q.compOpcoes===31 && q.compTrocou===true && q.simLinhas===12 &&
+      (ciclo? (/Projeção 12 ciclos/.test(q.abas) && /Comparativo de ciclos/.test(q.abas) && q.projCab==='Ciclo' && /^\d\d\/\d\d a \d\d\/\d\d\/\d\d$/.test(q.projPrimeira) && q.sim==='Ciclo' && /ciclo/.test(q.graf))
+            : (/Projeção 12 meses/.test(q.abas) && /Comparativo mensal/.test(q.abas) && q.projCab==='Mês' && /\d{4}$/.test(q.projPrimeira) && q.sim==='Mês' && /mensal/.test(q.graf)));
+    if(!relOk) console.log('    Relatórios inesperado:', JSON.stringify(q));
+    const o=r.info.orc;
+    const orcOk = o.linhas>0 && o.abas && (v==='normal'
+      ? (/Estourou/.test(o.linha) && /160%/.test(o.linha) && /Alimentação/.test(o.dashCard) && /de R\$ 50,00/.test(o.dashCard) && /passou do limite de "Alimentação"/.test(o.alerta) && o.viaLink===true && /Dentro/.test(o.depois) && /8%/.test(o.depois) && !/Alimentação/.test(o.alertaDepois) && /Alimentação,Lazer/.test(o.cartaoDepois))
+      : o.semCartao===true);
+    if(!orcOk) console.log('    Orçamento inesperado:', JSON.stringify(o));
+    const f=r.info.fat;
+    const fatOk = v==='normal'? (f.campo && f.botao && f.total && f.ajuste && /Criei um lançamento/.test(f.toast) && f.fechada && f.temBotaoBanco && f.menor && f.ajusteSumiu) : true;
+    if(!fatOk) console.log('    Total do banco inesperado:', JSON.stringify(f));
+    const ok=r.errors.length===0 && r.problems.length===0 && r.temaTrocou && coerente && relOk && orcOk && fatOk;
     console.log(`${ok?'PASSOU ':'FALHOU '} cenário "${v}": ${r.clicks} cliques nos 2 temas · abre em: Lançamentos=${r.info.lanc}, Relatórios=${r.info.rel}, Dashboard=${r.info.dash}`);
     r.errors.slice(0,10).forEach(e=>console.log('    erro:',e)); r.problems.slice(0,10).forEach(e=>console.log('    problema:',e));
     if(!coerente) console.log(`    período padrão inconsistente (esperado "${modo}" em todas as telas)`);
