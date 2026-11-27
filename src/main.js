@@ -1030,12 +1030,13 @@ function budgetAlerts(){
 function budgetBadge(st){
   return st==='estourou'? '<span class="badge rust">Estourou</span>' : st==='atencao'? '<span class="badge gold">Atenção</span>' : st==='ok'? '<span class="badge green">Dentro</span>' : '<span class="badge grey">Sem limite</span>';
 }
-function renderOrcamento(){
+function renderOrcamento(idp){
+  idp = idp || 'bud';
   const c = cycleAt(budgetOffset), rows = budgetRows(c), U = hasCycles();
   const withLimit = rows.filter(r=>r.limit>0);
   const totLimit = rnd2(withLimit.reduce((a,r)=>a+r.limit,0)), totSpent = rnd2(withLimit.reduce((a,r)=>a+r.spent,0)), totLeft = rnd2(totLimit-totSpent);
   return `
-    <div class="field-row" style="max-width:560px;margin-bottom:8px"><div class="field"><label>${U? 'Ciclo' : 'Mês'}</label><select id="bud-cycle">${cycleOptions(budgetOffset)}</select></div></div>
+    <div class="field-row" style="max-width:560px;margin-bottom:8px"><div class="field"><label>${U? 'Ciclo' : 'Mês'}</label><select id="${idp}-cycle">${cycleOptions(budgetOffset)}</select></div></div>
     <div class="help-text" style="margin-top:0">Digite o limite de cada categoria para o ${U? 'ciclo' : 'mês'}. O gasto soma o que já foi pago e o que ainda está previsto. A partir de 80% o app avisa.</div>
     <div class="grid grid-3" style="margin-top:12px">
       <div class="card"><div class="stat-label">Limites definidos</div><div class="stat-value num">${fmtCurrency(totLimit)}</div><div class="stat-foot">${withLimit.length} categoria${withLimit.length===1? '' : 's'}</div></div>
@@ -1053,22 +1054,24 @@ function renderOrcamento(){
         <td>${r.limit>0? `<div class="bud-uso"><div class="bud-bar"><i class="st-${r.status}" style="width:${Math.min(100,r.pct).toFixed(0)}%"></i></div><span class="bud-pct">${Math.round(r.pct)}%</span>${budgetBadge(r.status)}</div>` : budgetBadge('sem')}</td>
       </tr>`).join('')}</tbody></table></div>`;
 }
-function wireOrcamento(){
-  wireCurrencyMasks(document.getElementById('report-body'));
-  $('#bud-cycle').onchange = (e)=>{ budgetOffset = parseInt(e.target.value,10); RENDERERS.relatorios(); };
-  $$('.bud-limit').forEach(inp=>inp.onchange = ()=>{
+function wireOrcamento(idp, rootId, rerender){
+  idp = idp || 'bud'; rootId = rootId || 'report-body'; rerender = rerender || (()=>RENDERERS.relatorios());
+  const root = document.getElementById(rootId);
+  wireCurrencyMasks(root);
+  document.getElementById(idp+'-cycle').onchange = (e)=>{ budgetOffset = parseInt(e.target.value,10); rerender(); };
+  root.querySelectorAll('.bud-limit').forEach(inp=>inp.onchange = ()=>{
     const name = inp.dataset.cat, v = parseCurrencyValue(inp.value);
     let cat = state.categories.find(x=>x.name===name && x.type==='despesa');
     if(!cat){ if(!(v>0)) return; cat = {id:uid(), name, type:'despesa', essential:false, status:'ativa'}; state.categories.push(cat); }
     cat.limit = v>0? rnd2(v) : 0;
-    saveState(); RENDERERS.relatorios();
+    saveState(); rerender();
   });
 }
 function dashLimitsHtml(){
   const c = cycleAt(0), rows = budgetRows(c).filter(r=>r.limit>0);
   if(!rows.length) return '';
   return `<div class="card" style="margin-top:16px">
-    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap"><div class="stat-label">Limites do ${hasCycles()? 'ciclo' : 'mês'} · ${escapeHtml(cycleLabel(c))}</div><div class="dash-note" style="margin:0"><a href="#" data-goto="relatorios" data-sub="orcamento">Ver todos e editar</a></div></div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap"><div class="stat-label">Limites do ${hasCycles()? 'ciclo' : 'mês'} · ${escapeHtml(cycleLabel(c))}</div><div class="dash-note" style="margin:0"><a href="#" data-goto="planejamento" data-sub="limites">Ver todos e editar</a></div></div>
     ${rows.slice(0,5).map(r=>`<div class="bud-cr"><span class="dash-cat" title="${escapeHtml(r.name)}">${escapeHtml(r.name)}</span><div class="bud-bar"><i class="st-${r.status}" style="width:${Math.min(100,r.pct).toFixed(0)}%"></i></div><span class="num ${r.status==='estourou'? 'neg' : ''}">${fmtCurrency(r.spent)} <span class="bud-de">de ${fmtCurrency(r.limit)}</span></span></div>`).join('')}
     ${rows.length>5? `<div class="dash-note">+ ${rows.length-5} categoria${rows.length-5===1? '' : 's'} com limite</div>` : ''}
   </div>`;
@@ -1648,6 +1651,257 @@ function openSimModal(){
     }
   });
 }
+/* ===================== ORÇAMENTO: teto diário e fluxo do dinheiro ===================== */
+let budTab = 'visao';   // visao | fluxo | limites | dia
+let flowPeriod = {mode:null, month:null, custom:{from:'',to:''}, cycleRef:null};
+let flowBy = 'categoria';   // como agrupar as saídas: categoria | tipo | pagamento | conta
+const FLOW_SOURCE_LABEL = {manual:'Dia a dia', recurring:'Contas recorrentes', installment:'Parcelamentos', debt:'Dívidas', income:'Receitas fixas'};
+function budgetPeriod(){
+  const today = todayISO(), c = cycleAt(0);
+  const total = daysBetween(c.from,c.to)+1;
+  return {from:c.from, to:c.to, label:cycleLabel(c), daysTotal:total, daysLeft:Math.max(1, daysBetween(today,c.to)+1), dayIndex:Math.min(total, Math.max(1, daysBetween(c.from,today)+1))};
+}
+function manualCashSpent(from, to){
+  // gasto do dia a dia que já saiu da conta (lançamento manual, pago, fora do cartão)
+  return rnd2(state.transactions.filter(t=>t.type==='despesa' && t.source==='manual' && !t.cardId && t.status==='pago').reduce((a,t)=>{ const d = cashDate(t); return (d>=from && d<=to)? a+(Number(t.value)||0) : a; },0));
+}
+function allowanceInfo(){
+  // teto diário = o que sobra livre (saldo − o que ainda vence − reservas) ÷ dias que faltam, hoje incluído. Recalcula sozinho a cada gasto.
+  const today = todayISO(), per = budgetPeriod();
+  const m = dashMetrics({from:per.from, to:per.to, mode:'ciclo', label:per.label, daysLeft:per.daysLeft});
+  const spentToday = manualCashSpent(today,today);
+  const cardToday = rnd2(state.transactions.filter(t=>t.type==='despesa' && t.cardId && t.source==='manual' && t.purchaseDate===today).reduce((a,t)=>a+(Number(t.value)||0),0));
+  const perDay = rnd2(m.livre/per.daysLeft);
+  const perDayStart = rnd2((m.livre+spentToday)/per.daysLeft);   // o teto que valia ao acordar hoje
+  const leftToday = rnd2(perDayStart-spentToday);
+  const tomorrow = per.daysLeft>1? rnd2(m.livre/(per.daysLeft-1)) : null;   // se não gastar mais nada hoje
+  const avg7 = rnd2(manualCashSpent(addDaysToISO(today,-6),today)/7);
+  const spentPeriod = manualCashSpent(per.from,today), avgPeriod = rnd2(spentPeriod/per.dayIndex);
+  const daysOfCover = (avg7>0 && m.livre>0)? Math.floor(m.livre/avg7) : null;
+  const runoutDate = (daysOfCover!==null && daysOfCover<per.daysLeft)? addDaysToISO(today,daysOfCover) : null;   // quando o livre acabaria no ritmo recente
+  const overBy = avg7>0? rnd2(Math.max(0, avg7*per.daysLeft-m.livre)) : 0;   // quanto faltaria até o fim se mantiver o ritmo
+  const status = m.livre<=0? 'sem-margem' : avg7>perDay? 'acima' : 'ok';
+  return {per, m, livre:m.livre, perDay, perDayStart, spentToday, cardToday, leftToday, tomorrow, avg7, spentPeriod, avgPeriod, daysOfCover, runoutDate, overBy, status};
+}
+function dailyBreakdown(per){
+  const today = todayISO(), s = periodSummary(per), map = {}, out = [];
+  for(let d=per.from; d<=per.to; d=addDaysToISO(d,1)) map[d] = {date:d, dia:0, fixas:0, cartao:0, future:d>today};
+  s.txns.forEach(t=>{
+    if(t.type!=='despesa') return;
+    const b = map[cashDate(t)]; if(!b) return;
+    const v = Number(t.value)||0;
+    if(t.cardId) b.cartao += v; else if(t.source==='manual') b.dia += v; else b.fixas += v;
+  });
+  Object.keys(map).sort().forEach(d=>{ const b = map[d]; out.push({...b, dia:rnd2(b.dia), fixas:rnd2(b.fixas), cartao:rnd2(b.cartao)}); });
+  return out;
+}
+function flowItems(txs){
+  return txs.map(t=>({id:t.id, date:cashDate(t)||'', description:t.description||'—', category:t.category||'Sem categoria', value:Number(t.value)||0, status:t.status==='pago'? 'pago' : 'pendente', virtual:!!t.virtual, source:t.source||'manual',
+    method: t.cardId? 'Cartão de crédito' : (t.paymentMethod||'Outro'), account:(state.accounts.find(a=>a.id===t.accountId)||{}).name || 'Sem conta'}));
+}
+function flowGroups(items, keyFn){
+  const m = new Map();
+  items.forEach(it=>{ const k = keyFn(it); const g = m.get(k) || {key:k, total:0, paid:0, pending:0, items:[]}; g.total += it.value; if(it.status==='pago') g.paid += it.value; else g.pending += it.value; g.items.push(it); m.set(k,g); });
+  return [...m.values()].map(g=>({...g, total:rnd2(g.total), paid:rnd2(g.paid), pending:rnd2(g.pending), items:g.items.sort((a,b)=>a.date.localeCompare(b.date) || b.value-a.value)}))
+    .sort((a,b)=>b.total-a.total || a.key.localeCompare(b.key));
+}
+function flowData(per){
+  const s = periodSummary(per);
+  const rec = flowItems(s.txns.filter(t=>t.type==='receita')), des = flowItems(s.txns.filter(t=>t.type==='despesa'));
+  const sum = (a,f)=>rnd2(a.filter(f).reduce((x,i)=>x+i.value,0)), all = ()=>true;
+  const entrou = sum(rec,all), saiu = sum(des,all);
+  return {per, rec, des, entrou, saiu, sobra:rnd2(entrou-saiu),
+    recPaid:sum(rec,i=>i.status==='pago'), recPending:sum(rec,i=>i.status!=='pago'), desPaid:sum(des,i=>i.status==='pago'), desPending:sum(des,i=>i.status!=='pago'),
+    essential:sum(des,i=>categoryEssential(i.category)), byRecCat:flowGroups(rec,i=>i.category), recByAccount:flowGroups(rec,i=>i.account),
+    by:{categoria:flowGroups(des,i=>i.category), tipo:flowGroups(des,i=>FLOW_SOURCE_LABEL[i.source]||'Outros'), pagamento:flowGroups(des,i=>i.method), conta:flowGroups(des,i=>i.account)}};
+}
+function sankeyLayout(srcs, dsts, o){
+  o = o || {};
+  const W=o.W||900, H=o.H||380, nodeW=o.nodeW||14, labelW=o.labelW||190, gap=o.gap||8, minH=o.minH||18, f=x=>Math.round(x*10)/10;
+  const total = srcs.reduce((a,n)=>a+n.value,0);
+  if(!(total>0) || !srcs.length || !dsts.length) return {nodes:[], links:[], W, H, total:0};
+  const kFor = (arr)=>{   // maior escala em que a coluna cabe na altura, respeitando a altura mínima de cada nó
+    const fits = (k)=>arr.reduce((a,n)=>a+Math.max(minH,n.value*k),0)+gap*(arr.length-1) <= H;
+    let hi = (H-gap*(arr.length-1))/total, lo = 0;
+    if(fits(hi)) return hi;
+    for(let i=0;i<30;i++){ const mid = (lo+hi)/2; if(fits(mid)) lo = mid; else hi = mid; }
+    return lo;
+  };
+  const k = Math.min(kFor(srcs), kFor(dsts));
+  const place = (arr,side,x)=>{ const hs = arr.map(n=>Math.max(minH,n.value*k)); let y = (H-(hs.reduce((a,b)=>a+b,0)+gap*(arr.length-1)))/2; return arr.map((n,i)=>{ const node = {...n, side, x, y:f(y), h:f(hs[i])}; y += hs[i]+gap; return node; }); };
+  const L = place(srcs,'src',labelW), Rr = place(dsts,'dst',W-labelW-nodeW);
+  const midX = (W-nodeW)/2, midH = total*k, midY = (H-midH)/2;
+  const mid = {key:'__mid', label:'Dinheiro do período', value:rnd2(total), kind:'mid', side:'mid', x:f(midX), y:f(midY), h:f(midH)};
+  const bez = (x0,y0a,y0b,x1,y1a,y1b)=>{ const xm = (x0+x1)/2; return `M${f(x0)} ${f(y0a)}C${f(xm)} ${f(y0a)},${f(xm)} ${f(y1a)},${f(x1)} ${f(y1a)}L${f(x1)} ${f(y1b)}C${f(xm)} ${f(y1b)},${f(xm)} ${f(y0b)},${f(x0)} ${f(y0b)}Z`; };
+  const links = []; let cy = midY;
+  L.forEach(n=>{ const t = Math.max(2,n.value*k), c = n.y+n.h/2, t2 = n.value*k; links.push({side:'src', key:n.key, label:n.label, value:n.value, kind:n.kind, d:bez(n.x+nodeW, c-t/2, c+t/2, midX, cy, cy+t2)}); cy += t2; });
+  cy = midY;
+  Rr.forEach(n=>{ const t = Math.max(2,n.value*k), c = n.y+n.h/2, t2 = n.value*k; links.push({side:'dst', key:n.key, label:n.label, value:n.value, kind:n.kind, d:bez(midX+nodeW, cy, cy+t2, n.x, c-t/2, c+t/2)}); cy += t2; });
+  return {nodes:[...L, mid, ...Rr], links, W, H, total:rnd2(total), nodeW, k};
+}
+function flowSankeySvg(fd){
+  const take = (groups,n,other)=>{ const top = groups.slice(0,n).map(g=>({key:g.key, label:g.key, value:g.total})), rest = groups.slice(n); if(rest.length) top.push({key:'__outras', label:`${other} (${rest.length})`, value:rnd2(rest.reduce((a,g)=>a+g.total,0))}); return top; };
+  const srcs = take(fd.byRecCat,6,'Outras receitas').map(n=>({...n,kind:'in'}));
+  const dsts = take(fd.by.categoria,8,'Outras categorias').map(n=>({...n,kind:'out'}));
+  if(fd.sobra>0) dsts.push({key:'__sobra', label:'Sobra do período', value:fd.sobra, kind:'keep'});
+  if(fd.sobra<0) srcs.push({key:'__falta', label:'Do saldo que já tinha', value:-fd.sobra, kind:'gap'});
+  const H = Math.min(460, Math.max(260, Math.max(srcs.length,dsts.length)*38));
+  const lay = sankeyLayout(srcs, dsts, {W:900, H});
+  if(!lay.nodes.length) return '<div class="dash-note">Sem receitas nem despesas neste período.</div>';
+  const totIn = lay.total;
+  const pct = (v)=>totIn? Math.round(v/totIn*100) : 0;
+  const trunc = (t,n)=>t.length>n? t.slice(0,n-1)+'…' : t;
+  const tip = (n)=>`data-title="${escapeHtml(n.label)}" data-value="${escapeHtml(fmtCurrency(n.value)+' · '+pct(n.value)+'% do total')}"`;
+  const bands = lay.links.map(l=>`<path class="sk-band sk-${l.kind}" d="${l.d}" ${tip(l)}/>`).join('');
+  const nodes = lay.nodes.map(n=>{
+    const lab = n.kind==='mid'? '' : `<text class="sk-lab" x="${n.side==='src'? n.x-8 : n.x+lay.nodeW+8}" y="${n.y+n.h/2+4}" text-anchor="${n.side==='src'? 'end' : 'start'}">${escapeHtml(trunc(n.label,22))} · ${escapeHtml(fmtCurrency(n.value))}</text>`;
+    return `<rect class="sk-node sk-${n.kind}" x="${n.x}" y="${n.y}" width="${lay.nodeW}" height="${n.h}" ${tip(n)}/>${lab}`;
+  }).join('');
+  const aria = `Fluxo do dinheiro: entram ${fmtCurrency(fd.entrou)} e saem ${fmtCurrency(fd.saiu)}; ${fd.sobra>=0? 'sobram '+fmtCurrency(fd.sobra) : 'faltam '+fmtCurrency(-fd.sobra)}`;
+  return `<svg class="sk-svg" viewBox="0 0 ${lay.W} ${lay.H}" role="img" aria-label="${escapeHtml(aria)}">${bands}${nodes}</svg>`;
+}
+function wireFlowTips(wrap){
+  const tip = wrap.querySelector('.dc-tip'); if(!tip) return;
+  wrap.querySelectorAll('[data-title]').forEach(el=>{
+    el.addEventListener('pointermove', (e)=>{
+      const r = wrap.getBoundingClientRect();
+      tip.innerHTML = `<div class="dc-tip-head"><b>${escapeHtml(el.dataset.title)}</b></div><div class="dc-tip-val num" style="font-size:15px">${escapeHtml(el.dataset.value)}</div>`;
+      tip.hidden = false;
+      const tw = tip.offsetWidth || 220; let left = e.clientX-r.left+14; if(left+tw>r.width) left = e.clientX-r.left-tw-14;
+      tip.style.left = Math.max(0,left)+'px'; tip.style.top = Math.max(0,e.clientY-r.top-52)+'px';
+    });
+    el.addEventListener('pointerleave', ()=>{ tip.hidden = true; });
+  });
+}
+function flowGroupsHtml(groups, total, kind){
+  if(!groups.length) return '<div class="dash-note">Nada neste período.</div>';
+  const doneWord = kind==='pos'? 'Recebido' : 'Pago', todoWord = kind==='pos'? 'A receber' : 'A pagar';
+  return groups.map(g=>{
+    const pct = total? g.total/total*100 : 0;
+    return `<details class="flow-group"><summary><span class="fg-name" title="${escapeHtml(g.key)}">${escapeHtml(g.key)}</span><span class="fg-bar"><i class="${kind}" style="width:${Math.max(2,Math.min(100,pct)).toFixed(0)}%"></i></span><span class="fg-val num ${kind}">${fmtCurrency(g.total)}</span><span class="fg-pct">${Math.round(pct)}%</span></summary>
+      <div class="fg-sub">${g.paid>0? doneWord+' '+fmtCurrency(g.paid) : ''}${g.paid>0 && g.pending>0? ' · ' : ''}${g.pending>0? todoWord+' '+fmtCurrency(g.pending) : ''} · ${g.items.length} lançamento${g.items.length===1? '' : 's'}</div>
+      <table class="fg-table"><tbody>${g.items.map(it=>`<tr><td>${fmtDM(it.date)}</td><td>${escapeHtml(it.description)}${it.virtual? ' <span class="badge grey">Previsto</span>' : ''}</td><td class="fg-meta">${escapeHtml(it.method)} · ${escapeHtml(it.account)}</td><td>${it.status==='pago'? `<span class="badge green">${doneWord}</span>` : '<span class="badge gold">Pendente</span>'}</td><td class="right num ${kind}">${fmtCurrency(it.value)}</td></tr>`).join('')}</tbody></table></details>`;
+  }).join('');
+}
+function flowPeriodBarHtml(p){
+  const sd = parseInt(state.settings.primeiroDiaMes,10)||1;
+  const modes = [...(sd>1? [['ciclo',`Ciclo (dia ${sd})`]] : []), ['mes','Mês'], ['30d','Últimos 30 dias'], ['ano','Este ano'], ['custom','Personalizado']];
+  const per = resolvePeriod(p), nav = p.mode==='mes' || p.mode==='ciclo';
+  return `<div class="period-bar">
+    ${modes.map(([m,l])=>`<button class="fb-btn ${m===p.mode? 'active' : ''}" data-fbmode="${m}">${escapeHtml(l)}</button>`).join('')}
+    <span class="lp-nav">${nav? `<button class="btn" id="fb-prev">${icon('chevronLeft',16)}</button>` : ''}<span class="lp-label">${escapeHtml(per.label)}</span>${nav? `<button class="btn" id="fb-next">${icon('chevronRight',16)}</button>` : ''}</span>
+    ${p.mode==='custom'? `<span class="period-range"><label>De <input type="date" id="fb-from" value="${per.from}"></label><label>Até <input type="date" id="fb-to" value="${per.to}"></label></span>` : ''}
+  </div>`;
+}
+function todaySpendHtml(){
+  const today = todayISO();
+  const items = state.transactions.filter(t=>t.type==='despesa' && ((t.status==='pago' && cashDate(t)===today && !t.cardId) || (t.cardId && t.source==='manual' && t.purchaseDate===today)));
+  if(!items.length) return '<div class="dash-note">Nada gasto hoje até agora.</div>';
+  return items.map(t=>`<div class="dash-li"><span>${escapeHtml(t.description)}${t.cardId? ' <span class="badge grey">cartão</span>' : t.source!=='manual'? ` <span class="badge grey">${escapeHtml(sourceLabel(t.source))}</span>` : ''}</span><b class="num neg">${fmtCurrency(t.value)}</b></div>`).join('')
+    + '<div class="dash-note">Só o gasto do dia a dia (sem contas fixas e sem cartão) entra no teto de hoje. Compras no cartão pesam quando a fatura vence.</div>';
+}
+function allowanceHtml(a){
+  const per = a.per, un = hasCycles()? 'ciclo' : 'mês', noMargin = a.livre<=0, ds = (n)=>`${n} dia${n===1? '' : 's'}`;
+  const paceTxt = a.status==='sem-margem'? 'Sem margem no período.' : a.avg7===0? 'Você não gastou no dia a dia nos últimos 7 dias.' : a.status==='acima'? `Acima do teto (${fmtCurrency(a.perDay)}/dia).` : `Dentro do teto (${fmtCurrency(a.perDay)}/dia).`;
+  const runTxt = a.runoutDate? `No ritmo dos últimos 7 dias, o livre acaba em <b class="neg">${fmtDM(a.runoutDate)}</b>, antes do fim do ${un}: faltariam <b class="neg">${fmtCurrency(a.overBy)}</b> até ${fmtDM(per.to)}.` : (a.avg7>0 && a.livre>0? 'No ritmo dos últimos 7 dias, dá para chegar ao fim do '+un+' sem estourar.' : '');
+  return `
+    <div class="dash-grid ob-hero">
+      <div class="card ${noMargin? 'dash-bad' : 'dash-ok'}">
+        <div class="stat-label">Você pode gastar por dia até ${fmtDM(per.to)}</div>
+        <div class="dash-big ${noMargin? 'neg' : 'pos'} num">${fmtCurrency(Math.max(0,a.perDay))}</div>
+        <div class="dash-note">${noMargin? `Sem margem: o que vence até ${fmtDM(per.to)} é maior que o seu saldo (faltam ${fmtCurrency(-a.livre)}).` : `${fmtCurrency(a.livre)} livres ÷ ${ds(a.per.daysLeft)} (hoje incluído).`}</div>
+        <div class="dash-note">Se recalcula sozinho: gastar menos hoje aumenta o teto dos próximos dias; gastar mais diminui.</div>
+      </div>
+      <div class="card">
+        <div class="stat-label">Hoje</div>
+        <div class="dash-mid ${a.leftToday>=0? 'pos' : 'neg'} num">${fmtCurrency(Math.abs(a.leftToday))}</div>
+        <div class="dash-note">${a.leftToday>=0? 'ainda pode gastar hoje' : 'acima do teto de hoje'}</div>
+        <div class="dash-note">Teto ao acordar: ${fmtCurrency(a.perDayStart)} · gasto: <b class="neg">${fmtCurrency(a.spentToday)}</b>${a.cardToday>0? ` · no cartão: ${fmtCurrency(a.cardToday)}` : ''}</div>
+      </div>
+      <div class="card">
+        <div class="stat-label">${a.tomorrow===null? 'Amanhã' : 'A partir de amanhã'}</div>
+        ${a.tomorrow===null? `<div class="dash-note">Hoje é o último dia do ${un}. Amanhã começa um novo.</div>`
+          : `<div class="dash-mid ${a.tomorrow>0? 'pos' : 'neg'} num">${fmtCurrency(Math.max(0,a.tomorrow))}</div><div class="dash-note">por dia, se você não gastar mais nada hoje</div><div class="dash-note">${a.tomorrow>=a.perDay? '+' : '−'}${fmtCurrency(Math.abs(rnd2(a.tomorrow-a.perDay)))} em relação ao teto de agora</div>`}
+      </div>
+    </div>
+    <div class="dash-grid dash-3" style="margin-top:16px">
+      <div class="card"><div class="stat-label">Dias do ${un}</div><div class="dash-mid num">${a.per.daysLeft} <span class="dash-note" style="display:inline">de ${a.per.daysTotal} restantes</span></div>
+        <div class="dash-bar" style="margin-top:12px"><i style="width:${Math.round(a.per.dayIndex/a.per.daysTotal*100)}%;background:var(--accent)"></i></div><div class="dash-note">${escapeHtml(per.label)} · dia ${a.per.dayIndex}</div></div>
+      <div class="card"><div class="stat-label">Seu ritmo (últimos 7 dias)</div><div class="dash-mid num">${fmtCurrency(a.avg7)} <span class="dash-note" style="display:inline">por dia</span></div>
+        <div class="dash-note">${paceTxt}</div><div class="dash-note">Média no ${un} até agora: ${fmtCurrency(a.avgPeriod)} por dia (${fmtCurrency(a.spentPeriod)} no total).</div></div>
+      <div class="card"><div class="stat-label">Se mantiver o ritmo</div><div class="dash-note" style="margin-top:12px;color:var(--ink)">${runTxt || 'Sem gastos recentes para projetar.'}</div></div>
+    </div>`;
+}
+function dailyChartConfig(bars, perDay){
+  const alpha = (c,a)=>{ if(/^#/.test(c)){ const n = parseInt(c.slice(1),16); return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`; } return c; };
+  const col = (c)=>bars.map(b=>alpha(c, b.future? .4 : .9));
+  const tot = (b)=>rnd2(b.dia+b.fixas+b.cartao);
+  return {
+    data:{ labels:bars.map(b=>fmtDM(b.date)), datasets:[
+      {type:'bar', label:'Dia a dia', data:bars.map(b=>b.dia), backgroundColor:col(CHART_COLORS.red), stack:'d', order:2},
+      {type:'bar', label:'Contas e parcelas', data:bars.map(b=>b.fixas), backgroundColor:col(CHART_COLORS.yellow), stack:'d', order:2},
+      {type:'bar', label:'Faturas do cartão', data:bars.map(b=>b.cartao), backgroundColor:col(CHART_COLORS.accent), stack:'d', order:2},
+      {type:'line', label:'Teto por dia', data:bars.map(()=>Math.max(0,perDay)), borderColor:CHART_COLORS.green, borderDash:[6,4], borderWidth:2, pointRadius:0, fill:false, order:1}
+    ]},
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{labels:{usePointStyle:true, boxWidth:8}}, tooltip:{ callbacks:{
+        title:(items)=>{ const b = bars[items[0].dataIndex]; return fmtDayShort(b.date)+(b.future? ' (previsto)' : ''); },
+        label:(c)=>`${c.dataset.label}: ${fmtCurrency(c.raw)}`,
+        footer:(items)=>'Total do dia: '+fmtCurrency(tot(bars[items[0].dataIndex])) } } },
+      scales:{ x:{stacked:true, grid:{color:CHART_COLORS.line}}, y:{stacked:true, grid:{color:CHART_COLORS.line}, ticks:{callback:(v)=>fmtCurrency(v)}} } }
+  };
+}
+function renderObVisao(){
+  const a = allowanceInfo();
+  return allowanceHtml(a)+`
+    <div class="dash-grid dash-2" style="margin-top:16px">
+      <div class="card"><div class="stat-label">Quanto sai por dia neste ${hasCycles()? 'ciclo' : 'mês'}</div>
+        <div class="chart-box" style="margin-top:12px"><canvas id="chart-ob-daily"></canvas></div>
+        <div class="dash-note">Barras claras são dias que ainda vão acontecer (contas e parcelas já lançadas). A linha verde é o seu teto por dia de agora.</div></div>
+      <div class="card"><div class="stat-label">Gastos de hoje</div><div style="margin-top:6px">${todaySpendHtml()}</div></div>
+    </div>`;
+}
+function wireObVisao(){
+  const a = allowanceInfo();
+  renderChart('chart-ob-daily', {type:'bar', ...dailyChartConfig(dailyBreakdown(a.per), a.perDay)});
+}
+function renderObFluxo(){
+  if(!flowPeriod.mode) flowPeriod.mode = defaultPeriodMode();
+  if(!flowPeriod.month) flowPeriod.month = todayMonthKey();
+  const per = resolvePeriod(flowPeriod), fd = flowData(per);
+  const groups = fd.by[flowBy] || fd.by.categoria;
+  const by = [['categoria','Categoria'],['tipo','Tipo de gasto'],['pagamento','Forma de pagamento'],['conta','Conta']];
+  const essPct = fd.saiu? Math.round(fd.essential/fd.saiu*100) : 0;
+  return `${flowPeriodBarHtml(flowPeriod)}
+    <div class="grid grid-4" style="margin-top:12px">
+      <div class="card"><div class="stat-label">Entrou</div><div class="stat-value pos num">${fmtCurrency(fd.entrou)}</div><div class="stat-foot">Recebido <b class="pos">${fmtCurrency(fd.recPaid)}</b> · A receber <b class="pos">${fmtCurrency(fd.recPending)}</b></div></div>
+      <div class="card"><div class="stat-label">Saiu</div><div class="stat-value neg num">${fmtCurrency(fd.saiu)}</div><div class="stat-foot">Pago <b class="neg">${fmtCurrency(fd.desPaid)}</b> · A pagar <b class="neg">${fmtCurrency(fd.desPending)}</b></div></div>
+      <div class="card"><div class="stat-label">${fd.sobra>=0? 'Sobra' : 'Falta'}</div><div class="stat-value ${signClass(fd.sobra)} num">${fmtCurrency(Math.abs(fd.sobra))}</div><div class="stat-foot">${fd.entrou>0? Math.round(Math.abs(fd.sobra)/fd.entrou*100)+'% do que entrou' : '—'}</div></div>
+      <div class="card"><div class="stat-label">Essenciais</div><div class="stat-value num">${fmtCurrency(fd.essential)}</div><div class="stat-foot">${essPct}% das saídas · o resto é flexível</div></div>
+    </div>
+    <div class="card" style="margin-top:16px"><div class="stat-label">Do que entra até onde o dinheiro vai</div>
+      <div class="sk-wrap">${flowSankeySvg(fd)}<div class="dc-tip" hidden></div></div>
+      <div class="dash-note">Passe o mouse nas faixas e nos blocos. À esquerda, de onde veio; à direita, para onde foi (ou o que sobrou).${fd.sobra<0? ' O bloco "Do saldo que já tinha" mostra o quanto saiu além do que entrou.' : ''}</div></div>
+    <div class="dash-grid dash-2" style="margin-top:16px">
+      <div class="card"><div class="stat-label">De onde vem</div><div style="margin-top:8px">${flowGroupsHtml(fd.byRecCat, fd.entrou, 'pos')}</div>
+        ${fd.recByAccount.length? `<div class="stat-label" style="margin-top:18px">Em qual conta cai</div>${fd.recByAccount.map(g=>`<div class="dash-li"><span>${escapeHtml(g.key)}</span><b class="num pos">${fmtCurrency(g.total)}</b></div>`).join('')}` : ''}</div>
+      <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div class="stat-label">Para onde vai</div>
+        <div class="ob-bys">${by.map(([k,l])=>`<button class="ob-by ${k===flowBy? 'active' : ''}" data-by="${k}">${l}</button>`).join('')}</div></div>
+        <div style="margin-top:8px">${flowGroupsHtml(groups, fd.saiu, 'neg')}</div></div>
+    </div>`;
+}
+function wireObFluxo(rerender){
+  const root = $('#ob-body');
+  root.querySelectorAll('.fb-btn').forEach(b=>b.onclick=()=>{ setPeriodMode(flowPeriod, b.dataset.fbmode); rerender(); });
+  const pv = $('#fb-prev'), nx = $('#fb-next');
+  if(pv) pv.onclick = ()=>{ shiftPeriod(flowPeriod,-1); rerender(); };
+  if(nx) nx.onclick = ()=>{ shiftPeriod(flowPeriod,1); rerender(); };
+  const ff = $('#fb-from'), ft = $('#fb-to');
+  const apply = ()=>{ if(ff.value && ft.value){ flowPeriod.custom = {from:ff.value, to:ft.value}; rerender(); } };
+  if(ff) ff.onchange = apply; if(ft) ft.onchange = apply;
+  root.querySelectorAll('.ob-by').forEach(b=>b.onclick=()=>{ flowBy = b.dataset.by; rerender(); });
+  const wrap = root.querySelector('.sk-wrap'); if(wrap) wireFlowTips(wrap);
+}
 function dashCategoriesHtml(byCategory){
   const e = Object.entries(byCategory).sort((a,b)=>b[1]-a[1]);
   if(!e.length) return '<div class="dash-note">Sem despesas neste período.</div>';
@@ -1790,7 +2044,7 @@ RENDERERS.dashboard = function(){
 
     ${alerts.length? `<details class="dash-alerts"><summary>Alertas (${alerts.length})</summary><div style="margin-top:10px">${alerts.map(a=>`<div class="alert-item ${a.sev==='rust'? 'rust' : ''}">${icon(a.sev==='rust'? 'alertTriangle' : 'info',16)}<span>${escapeHtml(a.msg)}</span></div>`).join('')}</div></details>` : ''}
   `;
-  $$('#view-dashboard [data-goto]').forEach(c=>c.onclick=(e)=>{ e.preventDefault(); if(c.dataset.sub) reportSubtab = c.dataset.sub; switchView(c.dataset.goto); });
+  $$('#view-dashboard [data-goto]').forEach(c=>c.onclick=(e)=>{ e.preventDefault(); if(c.dataset.sub){ if(c.dataset.goto==='planejamento') budTab = c.dataset.sub; else reportSubtab = c.dataset.sub; } switchView(c.dataset.goto); });
   $$('#view-dashboard .dash-chip').forEach(b=>b.onclick=()=>{ dashMode = b.dataset.dmode; RENDERERS.dashboard(); });
   wireDashboardHeader();
   const dcw = $('#view-dashboard .dc-wrap'); if(dcw) wireDashChart(dcw, pts);
@@ -2169,7 +2423,7 @@ function balanceAsOfDate(iso){
   virtualEntriesBetween(todayIso, iso).forEach(v=>{ total += v.type==='receita'? Number(v.value) : -Number(v.value); });
   return total;
 }
-RENDERERS.planejamento = function(){
+function renderPlanDia(){
   const dayTxns = state.transactions.filter(t=>cashDate(t)===planDay).concat(virtualEntriesByDate(planDay)).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
   const receitasDia = dayTxns.filter(t=>t.type==='receita').reduce((a,t)=>a+Number(t.value),0);
   const despesasDia = dayTxns.filter(t=>t.type==='despesa').reduce((a,t)=>a+Number(t.value),0);
@@ -2177,9 +2431,9 @@ RENDERERS.planejamento = function(){
   const isToday = planDay===todayISO();
   const isPast = planDay<todayISO();
 
-  $('#view-planejamento').innerHTML = `
+  $('#ob-body').innerHTML = `
     <div class="view-head">
-      <div><h1>Planejamento</h1><div class="view-sub">Navegue dia a dia e veja o saldo projetado para cada data</div></div>
+      <div><h2>Dia a dia</h2><div class="view-sub">Navegue dia a dia e veja o saldo projetado para cada data</div></div>
       <div class="month-nav">
         <button class="btn" id="plan-prev">${icon('chevronLeft',16)}</button>
         <div class="month-label" style="min-width:260px">${dayLabel(planDay)}</div>
@@ -2246,6 +2500,19 @@ RENDERERS.planejamento = function(){
   $$('#view-planejamento [data-window]').forEach(b=>b.onclick=()=>{ upcomingWindow=parseInt(b.dataset.window); RENDERERS.planejamento(); });
   $$('#view-planejamento [data-mark-paid]').forEach(b=>b.onclick=()=>markTransactionPaid(b.dataset.markPaid));
   $$('#view-planejamento [data-goto]').forEach(c=>c.onclick=()=>switchView(c.dataset.goto));
+}
+RENDERERS.planejamento = function(){
+  const tabs = [['visao','Visão do período'],['fluxo','Fluxo do dinheiro'],['limites','Limites por categoria'],['dia','Dia a dia']];
+  $('#view-planejamento').innerHTML = `
+    <div class="view-head"><div><h1>Orçamento</h1><div class="view-sub">Quanto você pode gastar, de onde o dinheiro vem e para onde ele vai</div></div></div>
+    <div class="ob-tabs">${tabs.map(([k,l])=>`<button class="ob-tab ${k===budTab? 'active' : ''}" data-obtab="${k}">${l}</button>`).join('')}</div>
+    <div id="ob-body"></div>`;
+  const again = ()=>RENDERERS.planejamento();
+  $$('#view-planejamento .ob-tab').forEach(b=>b.onclick=()=>{ budTab = b.dataset.obtab; again(); });
+  if(budTab==='visao'){ $('#ob-body').innerHTML = renderObVisao(); wireObVisao(); }
+  else if(budTab==='fluxo'){ $('#ob-body').innerHTML = renderObFluxo(); wireObFluxo(again); }
+  else if(budTab==='limites'){ $('#ob-body').innerHTML = renderOrcamento('ob'); wireOrcamento('ob','ob-body',again); }
+  else renderPlanDia();
 };
 function typeBadge(type){
   if(type==='receita') return '<span class="badge green">Receita</span>';
@@ -3188,7 +3455,7 @@ RENDERERS.relatorios = function(){
   else if(reportSubtab==='graficos') { body.innerHTML = renderGraficos(); wireGraficos(); }
   else if(reportSubtab==='pareto') body.innerHTML = renderPareto();
   else if(reportSubtab==='equilibrio') body.innerHTML = renderEquilibrio();
-  else if(reportSubtab==='orcamento') { body.innerHTML = renderOrcamento(); wireOrcamento(); }
+  else if(reportSubtab==='orcamento') { body.innerHTML = renderOrcamento('bud'); wireOrcamento('bud','report-body',()=>RENDERERS.relatorios()); }
   else if(reportSubtab==='projecao') body.innerHTML = renderProjecao();
   else if(reportSubtab==='simulador') { body.innerHTML = renderSimulador(); wireSimulador(); }
 };

@@ -114,17 +114,17 @@ async function runVariant(variant,bundleText){
   info.rel2=rel;
   // ---- Orçamento por categoria ----
   const orc={}; await clickTab('orcamento');
-  const rowOf=(name)=>[...doc.querySelectorAll('#report-body tbody tr')].find(r=>r.cells[0].textContent.trim().startsWith(name));
+  const rowOf=(name,root='#report-body')=>[...doc.querySelectorAll(root+' tbody tr')].find(r=>r.cells[0].textContent.trim().startsWith(name));
   const flat=(el)=>(el? el.textContent : '').replace(/\s+/g,' ').replace(/\u00a0/g,' ');
   orc.linhas=doc.querySelectorAll('#report-body tbody tr').length; orc.abas=/Orçamento por categoria/.test(rel.abas);
   visit('dashboard'); await wait(15);
   if(variant==='normal'){
     orc.linha=flat(rowOf('Alimentação')||null) || (visit('relatorios'), '');
     orc.dashCard=flat(doc.querySelector('#view-dashboard .bud-cr')); orc.alerta=flat(doc.querySelector('#view-dashboard .dash-alerts'));
-    const link=doc.querySelector('#view-dashboard a[data-sub="orcamento"]'); if(link){ link.click(); await wait(15); orc.viaLink=!!doc.querySelector('#bud-cycle'); }
-    orc.linha=flat(rowOf('Alimentação'));
-    const inp=doc.querySelector('input.bud-limit[data-cat="Alimentação"]'); inp.value='1000,00'; inp.dispatchEvent(new w.Event('change')); await wait(15);
-    orc.depois=flat(rowOf('Alimentação'));
+    const link=doc.querySelector('#view-dashboard a[data-sub="limites"]'); if(link){ link.click(); await wait(15); orc.viaLink=!!doc.querySelector('#ob-cycle'); }
+    orc.linha=flat(rowOf('Alimentação','#ob-body'));
+    const inp=doc.querySelector('#ob-body input.bud-limit[data-cat="Alimentação"]'); inp.value='1000,00'; inp.dispatchEvent(new w.Event('change')); await wait(15);
+    orc.depois=flat(rowOf('Alimentação','#ob-body'));
     visit('dashboard'); await wait(15); orc.alertaDepois=flat(doc.querySelector('#view-dashboard .dash-alerts')); orc.cartaoDepois=[...doc.querySelectorAll('#view-dashboard .bud-cr .dash-cat')].map(e=>e.textContent).join();
   } else { orc.semCartao=!doc.querySelector('#view-dashboard .bud-cr'); }
   info.orc=orc;
@@ -152,9 +152,9 @@ async function runVariant(variant,bundleText){
   simi.botao=!!doc.getElementById('btn-sim');
   if(variant!=='vazio'){
     await fillSim({value:'999999,00', mode:'avista', description:'Carro'});
-    simi.painel=flat(doc.querySelector('#view-dashboard .dash-sim')); simi.linha=!!(svgSim()&&svgSim().querySelector('.dc-sim')); simi.negativo=/negativo a partir de/.test(simi.painel); simi.nome=/Carro/.test(simi.painel);
+    simi.futuro=!!(svgSim() && svgSim().querySelector('.dc-fut')); simi.painel=flat(doc.querySelector('#view-dashboard .dash-sim')); simi.linha=!!(svgSim()&&svgSim().querySelector('.dc-sim')); simi.negativo=/negativo a partir de/.test(simi.painel); simi.nome=/Carro/.test(simi.painel);
     svgSim().getBoundingClientRect=()=>({left:0,top:0,width:640,height:214}); svgSim().dispatchEvent(new w.MouseEvent('pointermove',{clientX:635,bubbles:true}));
-    simi.tooltip=/Com a compra/.test(flat(doc.querySelector('#view-dashboard .dc-tip')));
+    simi.tooltip=/Com a compra/.test(flat(doc.querySelector('#view-dashboard .dc-tip')));   // só existe se ainda sobram dias no período
     doc.getElementById('sim-clear').click(); await wait(15);
     simi.limpou=!doc.querySelector('#view-dashboard .dash-sim') && !svgSim().querySelector('.dc-sim') && /Simular uma compra/.test(doc.getElementById('btn-sim').textContent);
     doc.getElementById('btn-sim').click(); await wait(10); const cid=doc.querySelector('#modal-form [name="cardId"]').options[0].value; doc.getElementById('m-cancel').click();
@@ -164,6 +164,29 @@ async function runVariant(variant,bundleText){
     await fillSim({value:'500,00', mode:'parcelado'}); simi.erroSemCartao=/Cadastre um cartão/.test(flat(doc.getElementById('toasts'))) && !doc.querySelector('#view-dashboard .dash-sim');
   }
   info.sim=simi;
+  // ---- Orçamento: abas, teto diário e fluxo do dinheiro ----
+  const obx={}; visit('planejamento'); await wait(15);
+  const obTab=async(k)=>{ doc.querySelector(`#view-planejamento .ob-tab[data-obtab="${k}"]`).click(); await wait(15); };
+  await obTab('dia'); await obTab('visao');   // o app lembra a última aba; aqui escolhemos a Visão de propósito
+  obx.titulo=(doc.querySelector('#view-planejamento h1')||{}).textContent;
+  obx.abas=[...doc.querySelectorAll('#view-planejamento .ob-tab')].map(b=>b.textContent.trim()).join('|');
+  obx.ativa=(doc.querySelector('#view-planejamento .ob-tab.active')||{dataset:{}}).dataset.obtab;
+  obx.hero=flat(doc.querySelector('#view-planejamento .ob-hero')); obx.canvas=!!doc.getElementById('chart-ob-daily');
+  obx.hoje=/Hoje/.test(obx.hero) && /A partir de amanhã|Amanhã/.test(obx.hero);
+  await obTab('fluxo');
+  obx.sk=!!doc.querySelector('#view-planejamento .sk-svg'); obx.nos=doc.querySelectorAll('#view-planejamento .sk-node').length; obx.grupos=doc.querySelectorAll('#view-planejamento details.flow-group').length;
+  obx.msgVazio=/Sem receitas nem despesas/.test(flat(doc.getElementById('ob-body')));
+  const band=doc.querySelector('#view-planejamento .sk-band');
+  if(band){ band.dispatchEvent(new w.MouseEvent('pointermove',{clientX:100,clientY:80,bubbles:true})); obx.tip=!doc.querySelector('#view-planejamento .sk-wrap .dc-tip').hidden && /do total/.test(flat(doc.querySelector('#view-planejamento .sk-wrap .dc-tip'))); }
+  doc.querySelector('#view-planejamento .ob-by[data-by="tipo"]').click(); await wait(15);
+  obx.porTipo=flat(doc.querySelectorAll('#view-planejamento .dash-grid.dash-2 > .card')[1]);
+  obx.tipoAtivo=(doc.querySelector('#view-planejamento .ob-by.active')||{dataset:{}}).dataset.by;
+  doc.querySelector('#view-planejamento .fb-btn[data-fbmode="30d"]').click(); await wait(15);
+  obx.periodo30=/Últimos 30 dias/.test(flat(doc.querySelector('#view-planejamento .period-bar')));
+  await obTab('limites'); obx.limites=doc.querySelectorAll('#ob-cycle option').length;
+  await obTab('dia'); const lbl=()=>flat(doc.querySelector('#view-planejamento .month-label')); const l0=lbl(); doc.getElementById('plan-prev').click(); await wait(15); obx.diaNav=lbl()!==l0 && !!doc.getElementById('plan-today');
+  await obTab('visao'); obx.volta=(doc.querySelector('#view-planejamento .ob-tab.active')||{dataset:{}}).dataset.obtab;
+  info.ob=obx;
   await pass('escuro');
   doc.getElementById('btn-theme').click(); info.tema=doc.documentElement.getAttribute('data-theme'); await pass('claro');
   doc.getElementById('btn-theme').click();
@@ -190,9 +213,14 @@ async function runVariant(variant,bundleText){
     const fatOk = v==='normal'? (f.campo && f.botao && f.total && f.ajuste && /Criei um lançamento/.test(f.toast) && f.fechada && f.temBotaoBanco && f.menor && f.ajusteSumiu) : true;
     if(!fatOk) console.log('    Total do banco inesperado:', JSON.stringify(f));
     const sm=r.info.sim;
-    const simOk = sm.botao && (v==='vazio'? sm.erroSemCartao===true : (sm.linha && (v==='normal'? sm.negativo : true) && sm.nome && sm.tooltip && sm.limpou && sm.parcelado && sm.editar));
+    const simOk = sm.botao && (v==='vazio'? sm.erroSemCartao===true : ((sm.futuro===false || (sm.linha && (v==='normal'? sm.negativo : true) && sm.tooltip)) && sm.nome && sm.limpou && sm.parcelado && sm.editar));
     if(!simOk) console.log('    Simulador inesperado:', JSON.stringify(sm));
-    const ok=r.errors.length===0 && r.problems.length===0 && r.temaTrocou && coerente && relOk && orcOk && fatOk && simOk;
+    const x=r.info.ob;
+    const obOk = x.titulo==='Orçamento' && x.abas==='Visão do período|Fluxo do dinheiro|Limites por categoria|Dia a dia' && x.ativa==='visao' && /Você pode gastar por dia até/.test(x.hero) && x.canvas && x.hoje
+      && (x.sk? x.nos>=3 : x.msgVazio) && x.tipoAtivo==='tipo' && x.periodo30 && x.limites===31 && x.diaNav && x.volta==='visao'
+      && (v==='vazio' ? true : (x.grupos>=1 && x.tip===true && /Dia a dia|Contas recorrentes/.test(x.porTipo)));
+    if(!obOk) console.log('    Orçamento (abas) inesperado:', JSON.stringify(x));
+    const ok=r.errors.length===0 && r.problems.length===0 && r.temaTrocou && coerente && relOk && orcOk && fatOk && simOk && obOk;
     console.log(`${ok?'PASSOU ':'FALHOU '} cenário "${v}": ${r.clicks} cliques nos 2 temas · abre em: Lançamentos=${r.info.lanc}, Relatórios=${r.info.rel}, Dashboard=${r.info.dash}`);
     r.errors.slice(0,10).forEach(e=>console.log('    erro:',e)); r.problems.slice(0,10).forEach(e=>console.log('    problema:',e));
     if(!coerente) console.log(`    período padrão inconsistente (esperado "${modo}" em todas as telas)`);
